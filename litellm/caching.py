@@ -1668,6 +1668,290 @@ class DualCache(BaseCache):
             self.in_memory_cache.delete_cache(key)
         if self.redis_cache is not None:
             self.redis_cache.delete_cache(key)
+# --------------my code-------------------------------
+import ast
+import json
+import inspect
+from typing import List, Optional, Any, Dict, Callable, Tuple
+
+import hashlib
+import cachetools
+from gptcache import Cache, Config
+from gptcache.manager import manager_factory
+from gptcache.manager.eviction.memory_cache import MemoryCacheEviction, popitem_wrapper
+from gptcache.adapter.api import init_similar_cache
+from gptcache.embedding import LangChain, Onnx
+from gptcache.similarity_evaluation import SbertCrossencoderEvaluation
+
+
+class BudServeMemoryCacheEviction(MemoryCacheEviction):
+    """ This class `BudServeMemoryCacheEviction` is a subclass of `MemoryCacheEviction`
+    that implements memory cache eviction policies such as LRU and TTL with customizable
+    parameters. """
+
+    def __init__(
+        self,
+        policy: str = "LRU",
+        maxsize: int = 1000,
+        clean_size: int = 0,
+        on_evict: Callable[[List[Any]], None] = None,
+        ttl: Optional[int] = None,
+        **kwargs,
+    ):
+        try:
+            super().__init__(policy, maxsize, clean_size, on_evict, **kwargs)
+        except ValueError:
+            self._policy = policy.upper()
+            if self._policy == "TTL":
+                if not ttl:
+                    raise ValueError("TTL policy requires ttl parameter")
+                self._cache = cachetools.TTLCache(maxsize=maxsize, ttl=ttl, **kwargs)
+            else:
+                raise ValueError(f"Unknown policy {policy}")
+            self._cache.popitem = popitem_wrapper(self._cache.popitem, on_evict, clean_size)
+
+
+import ast
+import json
+import numpy as np
+from typing import Any, Dict, Optional, Union
+
+from gptcache import Cache, Config
+from gptcache.manager import manager_factory
+from gptcache.embedding import LangChain, Onnx
+from gptcache.similarity_evaluation import SbertCrossencoderEvaluation
+from langchain_community.cache import GPTCache
+
+class RedisGPTCache(GPTCache, BaseCache):
+    def __init__(
+        self,
+        host: Optional[str] = None,
+        port: Optional[int] = None,
+        password: Optional[str] = None,
+        similarity_threshold: float = None,
+        embedding_model: str = "text-embedding-ada-002",
+        use_async: bool = False,
+        eviction_params: Optional[Dict[str, Any]] = None,  
+        **kwargs,
+    ):
+        if similarity_threshold is None:
+            raise Exception(f"similarity_threshold must be provided, passed None {similarity_threshold}")
+        self.similarity_threshold = similarity_threshold
+        self.embedding_model = embedding_model
+
+        if host is None or port is None or password is None:
+            # Try checking environment variables for host, port, and password
+            import os
+
+            host = os.getenv("REDIS_HOST")
+            port = os.getenv("REDIS_PORT")
+            password = os.getenv("REDIS_PASSWORD")
+            if host is None or port is None or password is None:
+                raise Exception("Redis host, port, and password must be provided")
+
+        redis_url = f"redis://:{password}@{host}:{port}"
+        print_verbose(f"GPTCache redis_url: {redis_url}")
+
+        # Initialize GPTCache components
+        embeddings = LangChain() if embedding_model == "langchain" else Onnx()
+        data_manager = manager_factory(
+            "redis,redis",
+            scalar_params={
+                "redis_host": host,
+                "redis_port": port,
+                "password": password,
+                "global_key_prefix": "gpt_cache",
+            },
+            vector_params={
+                "host": host,
+                "port": port,
+                "password": password,
+                "dimension": embeddings.dimension,
+                "top_k": 1,
+                "collection_name": "index_gpt_cache",
+                "namespace": "namespace_gpt_cache",
+            },
+            eviction_manager="no_op_eviction",  # Default value, will be overridden if needed
+        )
+        eviction_params = {
+            "maxsize": getattr(eviction_params, 'max_size', 1000),
+            "policy": getattr(eviction_params, 'eviction_policy', "LRU"),
+            "clean_size": int(getattr(eviction_params, 'max_size', 1000) * 0.2) or 1,
+            "ttl": getattr(eviction_params, 'ttl', 3600),
+            "on_evict": data_manager._clear,
+        }
+        # Set eviction base dynamically
+        data_manager.eviction_base = BudServeMemoryCacheEviction(**eviction_params)
+        data_manager.eviction_base.put(data_manager.s.get_ids(deleted=False))
+
+        self.cache_obj = Cache()
+        self.data_manager = data_manager
+
+        # Initialize GPTCache with embeddings, data manager, and similarity evaluation
+        init_similar_cache(
+            cache_obj=self.cache_obj,
+            embedding=embeddings,
+            data_manager=data_manager,
+            evaluation=SbertCrossencoderEvaluation(),
+            config=Config(
+                similarity_threshold=similarity_threshold,
+                auto_flush=1,
+            ),
+        )
+
+    def _get_cache_logic(self, cached_response: Any) -> Any:
+        """Common 'get_cache_logic' across sync + async cache implementations"""
+        if cached_response is None:
+            return cached_response
+
+        # Check if cached_response is bytes
+        if isinstance(cached_response, bytes):
+            cached_response = cached_response.decode("utf-8")
+
+        try:
+            cached_response = json.loads(cached_response)  # Convert string to dictionary
+        except Exception:
+            cached_response = ast.literal_eval(cached_response)
+        return cached_response
+
+    def set_cache(self, key: str, value: Any, **kwargs) -> None:
+        print_verbose(f"gptcache set_cache, kwargs: {kwargs}")
+
+        # Get the prompt
+        messages = kwargs["messages"]
+        prompt = "".join(message["content"] for message in messages)
+
+        # Create an embedding for prompt
+        embedding_response = self.cache_obj.embedding(
+            model=self.embedding_model,
+            input=prompt,
+            cache={"no-store": True, "no-cache": True},
+        )
+
+        # Get the embedding
+        embedding = embedding_response["data"][0]["embedding"]
+
+        # Make the embedding a numpy array, convert to bytes
+        embedding_bytes = np.array(embedding, dtype=np.float32).tobytes()
+        value = str(value)
+        assert isinstance(value, str)
+
+        new_data = [{"response": value, "prompt": prompt, "embedding": embedding_bytes}]
+
+        # Add more data
+        self.data_manager.import_data(new_data)
+
+    def get_cache(self, key: str, **kwargs) -> Optional[Any]:
+        print_verbose(f"sync gptcache get_cache, kwargs: {kwargs}")
+
+        # Get the messages
+        messages = kwargs["messages"]
+        prompt = "".join(message["content"] for message in messages)
+
+        # Convert to embedding
+        embedding_response = self.cache_obj.embedding(
+            model=self.embedding_model,
+            input=prompt,
+            cache={"no-store": True, "no-cache": True},
+        )
+
+        # Get the embedding
+        embedding = embedding_response["data"][0]["embedding"]
+
+        results = self.data_manager.search(embedding)
+        if results is None:
+            return None
+        if isinstance(results, list) and len(results) == 0:
+            return None
+
+        vector_distance = results[0]["distance"]
+        similarity = 1 - vector_distance
+        cached_prompt = results[0]["prompt"]
+
+        # Check similarity; if more than self.similarity_threshold, return results
+        print_verbose(
+            f"gptcache: similarity threshold: {self.similarity_threshold}, similarity: {similarity}, prompt: {prompt}, closest_cached_prompt: {cached_prompt}"
+        )
+        if similarity > self.similarity_threshold:
+            # Cache hit!
+            cached_value = results[0]["response"]
+            print_verbose(
+                f"Got a cache hit, similarity: {similarity}, Current prompt: {prompt}, cached_prompt: {cached_prompt}"
+            )
+            return self._get_cache_logic(cached_response=cached_value)
+        else:
+            # Cache miss!
+            return None
+
+    async def async_set_cache(self, key: str, value: Any, **kwargs) -> None:
+        print_verbose(f"async gptcache set_cache, kwargs: {kwargs}")
+
+        # Get the prompt
+        messages = kwargs["messages"]
+        prompt = "".join(message["content"] for message in messages)
+
+        # Create an embedding for prompt
+        embedding_response = await self.cache_obj.embedding(
+            model=self.embedding_model,
+            input=prompt,
+            cache={"no-store": True, "no-cache": True},
+        )
+
+        # Get the embedding
+        embedding = embedding_response["data"][0]["embedding"]
+
+        # Make the embedding a numpy array, convert to bytes
+        embedding_bytes = np.array(embedding, dtype=np.float32).tobytes()
+        value = str(value)
+        assert isinstance(value, str)
+
+        new_data = [{"response": value, "prompt": prompt, "embedding": embedding_bytes}]
+
+        # Add more data
+        self.data_manager.import_data(new_data)
+
+    async def async_get_cache(self, key: str, **kwargs) -> Optional[Any]:
+        print_verbose(f"async gptcache get_cache, kwargs: {kwargs}")
+
+        # Get the messages
+        messages = kwargs["messages"]
+        prompt = "".join(message["content"] for message in messages)
+
+        # Convert to embedding
+        embedding_response = await self.cache_obj.embedding(
+            model=self.embedding_model,
+            input=prompt,
+            cache={"no-store": True, "no-cache": True},
+        )
+
+        # Get the embedding
+        embedding = embedding_response["data"][0]["embedding"]
+
+        results = self.data_manager.search(embedding)
+        if results is None:
+            return None
+        if isinstance(results, list) and len(results) == 0:
+            return None
+
+        vector_distance = results[0]["distance"]
+        similarity = 1 - vector_distance
+        cached_prompt = results[0]["prompt"]
+
+        # Check similarity; if more than self.similarity_threshold, return results
+        print_verbose(
+            f"gptcache: similarity threshold: {self.similarity_threshold}, similarity: {similarity}, prompt: {prompt}, closest_cached_prompt: {cached_prompt}"
+        )
+        if similarity > self.similarity_threshold:
+            # Cache hit!
+            cached_value = results[0]["response"]
+            print_verbose(
+                f"Got a cache hit, similarity: {similarity}, Current prompt: {prompt}, cached_prompt: {cached_prompt}"
+            )
+            return self._get_cache_logic(cached_response=cached_value)
+        else:
+            # Cache miss!
+            return None
+
 
 
 #### LiteLLM.Completion / Embedding Cache ####
@@ -1675,7 +1959,7 @@ class Cache:
     def __init__(
         self,
         type: Optional[
-            Literal["local", "redis", "redis-semantic", "s3", "disk"]
+            Literal["local", "redis", "redis-semantic", "redis-gptcache", "s3", "disk"]
         ] = "local",
         host: Optional[str] = None,
         port: Optional[str] = None,
@@ -1708,6 +1992,7 @@ class Cache:
             "atext_completion",
             "text_completion",
         ],
+        eviction_params: Optional[Dict[str, Any]] = None,
         # s3 Bucket, boto3 configuration
         s3_bucket_name: Optional[str] = None,
         s3_region_name: Optional[str] = None,
@@ -1724,6 +2009,7 @@ class Cache:
         redis_semantic_cache_embedding_model="text-embedding-ada-002",
         redis_flush_size=None,
         disk_cache_dir=None,
+
         **kwargs,
     ):
         """
@@ -1757,6 +2043,19 @@ class Cache:
                 similarity_threshold=similarity_threshold,
                 use_async=redis_semantic_cache_use_async,
                 embedding_model=redis_semantic_cache_embedding_model,
+                **kwargs,
+            )
+        elif type == "redis-gptcache":
+            if similarity_threshold is None:
+                raise Exception(f"similarity_thresho, passed None {similarity_threshold, host}")
+            self.cache = RedisGPTCache(
+                host,
+                port,
+                password,
+                similarity_threshold=similarity_threshold,
+                use_async=redis_semantic_cache_use_async,
+                embedding_model=redis_semantic_cache_embedding_model,
+                eviction_params=eviction_params,
                 **kwargs,
             )
         elif type == "local":
