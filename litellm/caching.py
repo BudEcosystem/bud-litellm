@@ -25,7 +25,8 @@ from litellm._logging import verbose_logger
 from litellm.litellm_core_utils.core_helpers import _get_parent_otel_span_from_kwargs
 from litellm.types.services import ServiceLoggerPayload, ServiceTypes
 from litellm.types.utils import all_litellm_params
-
+import os
+os.environ['LITELLM_LOG'] = 'DEBUG'
 
 def print_verbose(print_statement):
     try:
@@ -1715,12 +1716,12 @@ import ast
 import json
 import numpy as np
 from typing import Any, Dict, Optional, Union
-
-from gptcache import Cache, Config
+from gptcache import Cache as Cachegpt, Config
 from gptcache.manager import manager_factory
 from gptcache.embedding import LangChain, Onnx
 from gptcache.similarity_evaluation import SbertCrossencoderEvaluation
 from langchain_community.cache import GPTCache
+from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 
 class RedisGPTCache(GPTCache, BaseCache):
     def __init__(
@@ -1751,9 +1752,7 @@ class RedisGPTCache(GPTCache, BaseCache):
 
         redis_url = f"redis://:{password}@{host}:{port}"
         print_verbose(f"GPTCache redis_url: {redis_url}")
-
-        # Initialize GPTCache components
-        embeddings = LangChain() if embedding_model == "langchain" else Onnx()
+        embeddings = LangChain(embeddings=HuggingFaceEmbeddings(model_name=self.embedding_model)) if embedding_model else Onnx()
         data_manager = manager_factory(
             "redis,redis",
             scalar_params={
@@ -1783,10 +1782,9 @@ class RedisGPTCache(GPTCache, BaseCache):
         # Set eviction base dynamically
         data_manager.eviction_base = BudServeMemoryCacheEviction(**eviction_params)
         data_manager.eviction_base.put(data_manager.s.get_ids(deleted=False))
-
-        self.cache_obj = Cache()
+        self.cache_obj = Cachegpt()
+        print_verbose(f"GPTCachexx {type(self.cache_obj)}")
         self.data_manager = data_manager
-
         # Initialize GPTCache with embeddings, data manager, and similarity evaluation
         init_similar_cache(
             cache_obj=self.cache_obj,
@@ -1822,7 +1820,7 @@ class RedisGPTCache(GPTCache, BaseCache):
         prompt = "".join(message["content"] for message in messages)
 
         # Create an embedding for prompt
-        embedding_response = self.cache_obj.embedding(
+        embedding_response = litellm.embedding(
             model=self.embedding_model,
             input=prompt,
             cache={"no-store": True, "no-cache": True},
@@ -1835,11 +1833,10 @@ class RedisGPTCache(GPTCache, BaseCache):
         embedding_bytes = np.array(embedding, dtype=np.float32).tobytes()
         value = str(value)
         assert isinstance(value, str)
-
-        new_data = [{"response": value, "prompt": prompt, "embedding": embedding_bytes}]
-
+        print_verbose(f"valuexx: {value}")
+        new_data = {"answers": value, "questions": prompt, "embedding_datas": embedding_bytes, "session_ids": [None for _ in range(len(prompt))],}
         # Add more data
-        self.data_manager.import_data(new_data)
+        self.data_manager.import_data(**new_data)
 
     def get_cache(self, key: str, **kwargs) -> Optional[Any]:
         print_verbose(f"sync gptcache get_cache, kwargs: {kwargs}")
@@ -1849,7 +1846,7 @@ class RedisGPTCache(GPTCache, BaseCache):
         prompt = "".join(message["content"] for message in messages)
 
         # Convert to embedding
-        embedding_response = self.cache_obj.embedding(
+        embedding_response = litellm.embedding(
             model=self.embedding_model,
             input=prompt,
             cache={"no-store": True, "no-cache": True},
@@ -1857,7 +1854,8 @@ class RedisGPTCache(GPTCache, BaseCache):
 
         # Get the embedding
         embedding = embedding_response["data"][0]["embedding"]
-
+        # print(f"Embedding size: {len(embedding)}")
+        # assert len(embedding) == 3072
         results = self.data_manager.search(embedding)
         if results is None:
             return None
@@ -1891,7 +1889,7 @@ class RedisGPTCache(GPTCache, BaseCache):
         prompt = "".join(message["content"] for message in messages)
 
         # Create an embedding for prompt
-        embedding_response = await self.cache_obj.embedding(
+        embedding_response = litellm.embedding(
             model=self.embedding_model,
             input=prompt,
             cache={"no-store": True, "no-cache": True},
@@ -1918,7 +1916,7 @@ class RedisGPTCache(GPTCache, BaseCache):
         prompt = "".join(message["content"] for message in messages)
 
         # Convert to embedding
-        embedding_response = await self.cache_obj.embedding(
+        embedding_response = litellm.embedding(
             model=self.embedding_model,
             input=prompt,
             cache={"no-store": True, "no-cache": True},
