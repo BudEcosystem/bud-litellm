@@ -105,7 +105,7 @@ from litellm import (
     RetrieveBatchRequest,
 )
 from litellm._logging import verbose_proxy_logger, verbose_router_logger
-from litellm.caching import DualCache, RedisCache
+from litellm.caching import DualCache, RedisCache, RedisGPTCache
 from litellm.exceptions import RejectedRequestError
 from litellm.integrations.slack_alerting import SlackAlerting, SlackAlertingArgs
 from litellm.litellm_core_utils.core_helpers import get_litellm_metadata_from_kwargs
@@ -1439,7 +1439,7 @@ class ProxyConfig:
                     verbose_proxy_logger.debug("passed cache type=%s", cache_type)
 
                     if (
-                        cache_type == "redis" or cache_type == "redis-semantic"
+                        cache_type == "redis" or cache_type == "redis-semantic" or cache_type == "redis-gptcache"
                     ) and len(cache_params.keys()) == 0:
                         cache_host = litellm.get_secret("REDIS_HOST", None)
                         cache_port = litellm.get_secret("REDIS_PORT", None)

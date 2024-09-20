@@ -2,10 +2,11 @@ from typing import Dict, Any, Optional, Callable
 from functools import cached_property
 from pydantic import (
     BaseModel, computed_field, ConfigDict,
-    UUID4, field_validator, ValidationInfo,
+    UUID4, field_validator, ValidationInfo, root_validator
 )
 from langchain.embeddings.base import Embeddings
 from langchain_huggingface.embeddings import HuggingFaceEmbeddings
+from enum import Enum
 import os
 # from ..constants import CredentialTypeEnum
 # from ..core.config import get_settings
@@ -37,9 +38,9 @@ class CacheMetricConfig(BaseModel):
 
 
 class EvictionPolicy(BaseModel):
-    policy: str = os.environ("CACHE_EVICTION_POLICY")
-    max_size: int = os.environ("CACHE_MAX_SIZE")
-    ttl: Optional[int] = os.environ("CACHE_TTL")
+    policy: str = os.getenv("CACHE_EVICTION_POLICY")
+    max_size: int = os.getenv("CACHE_MAX_SIZE")
+    ttl: Optional[int] = os.getenv("CACHE_TTL")
 
 
 class BudServeCacheConfig(BaseModel):
@@ -48,10 +49,9 @@ class BudServeCacheConfig(BaseModel):
         protected_namespaces=(),
     )
 
-    embedding_model: Optional[str] = os.environ("CACHE_EMBEDDING_MODEL")
+    embedding_model: Optional[str] = os.getenv("CACHE_EMBEDDING_MODEL")
     eviction_policy: Optional[EvictionPolicy] = EvictionPolicy()
-    score_threshold: float = os.environ("CACHE_SCORE_THRESHOLD")
-
+    score_threshold: float = os.getenv("CACHE_SCORE_THRESHOLD")
     metric_config: Optional[CacheMetricConfig] = None
 
     @computed_field
@@ -68,17 +68,17 @@ class BudServeCacheConfig(BaseModel):
 def create_cache_config(cache_config: Dict[str, Any]) -> Dict[str, Any]:
     llm_cache_config = {}
     llm_cache_config["embedding_model"] = (
-        cache_config.get("embedding_model") or os.environ("CACHE_EMBEDDING_MODEL")
+        cache_config.get("embedding_model") or os.getenv("CACHE_EMBEDDING_MODEL")
     )
     llm_cache_config["eviction_policy"] = (
-        cache_config.get("eviction_policy") or os.environ("CACHE_EVICTION_POLICY")
+        cache_config.get("eviction_policy") or os.getenv("CACHE_EVICTION_POLICY")
     )
     llm_cache_config["max_size"] = (
-        cache_config.get("max_size") or os.environ("CACHE_MAX_SIZE")
+        cache_config.get("max_size") or os.getenv("CACHE_MAX_SIZE")
     )
-    llm_cache_config["ttl"] = cache_config.get("ttl") or os.environ("CACHE_TTL")
+    llm_cache_config["ttl"] = cache_config.get("ttl") or os.getenv("CACHE_TTL")
     llm_cache_config["score_threshold"] = (
-        cache_config.get("score_threshold") or os.environ("CACHE_SCORE_THRESHOLD")
+        cache_config.get("score_threshold") or os.getenv("CACHE_SCORE_THRESHOLD")
     )
     return llm_cache_config
 
