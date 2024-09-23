@@ -608,9 +608,6 @@ def function_setup(
         )
         raise e
 
-from .config import BudServeCacheConfig, EvictionPolicy, CacheMetricConfig
-from pydantic import BaseModel
-from uuid import UUID
 
 def client(original_function):
     global liteDebuggerClient, get_all_keys
@@ -838,7 +835,7 @@ def client(original_function):
                 and kwargs.get("atranscription", False) != True
             ):  # allow users to control returning cached responses from the completion function
                 # checking cache
-                print_verbose(f"INSIDE CHECKING CACHE sync")
+                print_verbose(f"INSIDE CHECKING CACHE")
                 if (
                     litellm.cache is not None
                     and str(original_function.__name__)

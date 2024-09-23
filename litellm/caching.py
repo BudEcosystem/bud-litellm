@@ -25,8 +25,7 @@ from litellm._logging import verbose_logger
 from litellm.litellm_core_utils.core_helpers import _get_parent_otel_span_from_kwargs
 from litellm.types.services import ServiceLoggerPayload, ServiceTypes
 from litellm.types.utils import all_litellm_params
-import os
-os.environ['LITELLM_LOG'] = 'DEBUG'
+
 
 def print_verbose(print_statement):
     try:
@@ -919,6 +918,7 @@ class RedisSemanticCache(BaseCache):
     ):
         from redisvl.index import SearchIndex
         from redisvl.query import VectorQuery
+
         print_verbose(
             "redis semantic-cache initializing INDEX - litellm_semantic_cache_index"
         )
@@ -930,45 +930,22 @@ class RedisSemanticCache(BaseCache):
             "index": {
                 "name": "litellm_semantic_cache_index",
                 "prefix": "litellm",
-                # "key_separator": ":",
-                "storage_type": "hash"
+                "storage_type": "hash",
             },
-            "fields": [
-                {"name": "response", "type": "text"},
-                {"name": "prompt", "type": "text"},
-                {
-                    "name": "litellm_embedding",
-                    "type": "vector",
-                    "attrs": {
-                        "algorithm": "flat",      
+            "fields": {
+                "text": [{"name": "response"}],
+                "text": [{"name": "prompt"}],
+                "vector": [
+                    {
+                        "name": "litellm_embedding",
                         "dims": 1536,
                         "distance_metric": "cosine",
                         "algorithm": "flat",
-                        "datatype": "float32"          
+                        "datatype": "float32",
                     }
-                }
-            ]
+                ],
+            },
         }
-        # {
-        #     "index": {
-        #         "name": "litellm_semantic_cache_index",
-        #         "prefix": "litellm",
-        #         "storage_type": "hash",
-        #     },
-        #     "fields": {
-        #         "text": [{"name": "response"}],
-        #         "text": [{"name": "prompt"}],
-        #         "vector": [
-        #             {
-        #                 "name": "litellm_embedding",
-        #                 "dims": 1536,
-        #                 "distance_metric": "cosine",
-        #                 "algorithm": "flat",
-        #                 "datatype": "float32",
-        #             }
-        #         ],
-        #     },
-        # }
         if redis_url is None:
             # if no url passed, check if host, port and password are passed, if not raise an Exception
             if host is None or port is None or password is None:
@@ -1699,7 +1676,7 @@ class Cache:
     def __init__(
         self,
         type: Optional[
-            Literal["local", "redis", "redis-semantic", "redis-gptcache", "s3", "disk"]
+            Literal["local", "redis", "redis-semantic", "gpt_cache_redis", "s3", "disk"]
         ] = "local",
         host: Optional[str] = None,
         port: Optional[str] = None,
@@ -1745,12 +1722,9 @@ class Cache:
         s3_config: Optional[Any] = None,
         s3_path: Optional[str] = None,
         redis_semantic_cache_use_async=False,
-        redis_gptcache_use_async=False,
         redis_semantic_cache_embedding_model="text-embedding-ada-002",
-        redis_gptcache_embedding_model="sentence-transformers/all-MiniLM-L6-v2",
         redis_flush_size=None,
         disk_cache_dir=None,
-
         **kwargs,
     ):
         """
@@ -1786,14 +1760,14 @@ class Cache:
                 embedding_model=redis_semantic_cache_embedding_model,
                 **kwargs,
             )
-        elif type == "redis-gptcache":
+        elif type == "gpt_cache_redis":
             self.cache = RedisGPTCache(
                 host,
                 port,
                 password,
                 similarity_threshold=similarity_threshold,
-                use_async=redis_gptcache_use_async,
-                embedding_model=redis_gptcache_embedding_model,
+                use_async=redis_semantic_cache_use_async,
+                embedding_model=redis_semantic_cache_embedding_model,
                 **kwargs,
             )
         elif type == "local":
@@ -1831,7 +1805,7 @@ class Cache:
             self.ttl = default_in_memory_ttl
 
         if (
-            self.type == "redis" or self.type == "redis-semantic" or self.type == "redis-gptcache"
+            self.type == "redis" or self.type == "redis-semantic" or self.type == "gpt_cache_redis"
         ) and default_in_redis_ttl is not None:
             self.ttl = default_in_redis_ttl
 
@@ -2013,13 +1987,11 @@ class Cache:
                     pass
                 else:
                     cached_response = json.loads(
-                        cached_response  
+                        cached_response  # type: ignore
                     )  # Convert string to dictionary
             except:
-                cached_response = ast.literal_eval(cached_response)  
-            print_verbose(f"returning from _get_cache_logic {cached_response}")
+                cached_response = ast.literal_eval(cached_response)  # type: ignore
             return cached_response
-        print_verbose(f"returning from _get_cache_logic out {cached_result}")
         return cached_result
 
     def get_cache(self, *args, **kwargs):
@@ -2034,7 +2006,7 @@ class Cache:
             The cached result if it exists, otherwise None.
         """
         try:  # never block execution
-            # kwargs.pop('messages', None)
+            messages = kwargs.get("messages", [])
             if "cache_key" in kwargs:
                 cache_key = kwargs["cache_key"]
             else:
@@ -2044,9 +2016,7 @@ class Cache:
                 max_age = cache_control_args.get(
                     "s-max-age", cache_control_args.get("s-maxage", float("inf"))
                 )
-                print(f"in get cache kwargs {kwargs}")
-                cached_result = self.cache.get_cache(key=cache_key, **kwargs)
-                print_verbose(f"returning from get_cache of Cache {cached_result}")
+                cached_result = self.cache.get_cache(key=cache_key, messages=messages)
                 return self._get_cache_logic(
                     cached_result=cached_result, max_age=max_age
                 )
@@ -2061,6 +2031,7 @@ class Cache:
         Used for embedding calls in async wrapper
         """
         try:  # never block execution
+            messages = kwargs.get("messages", [])
             if "cache_key" in kwargs:
                 cache_key = kwargs["cache_key"]
             else:
@@ -2105,7 +2076,6 @@ class Cache:
                             kwargs["ttl"] = v
 
                 cached_data = {"timestamp": time.time(), "response": result}
-                print_verbose(f"output of _add_cache_logic in Cache or input of set cache {cache_key,cached_data}")
                 return cache_key, cached_data, kwargs
             else:
                 raise Exception("cache key is None")
@@ -2124,7 +2094,6 @@ class Cache:
             None
         """
         try:
-            print_verbose(f"input to add_cache {result}")
             cache_key, cached_data, kwargs = self._add_cache_logic(
                 result=result, *args, **kwargs
             )
