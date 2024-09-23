@@ -63,7 +63,7 @@ class BudServeMemoryCacheEviction(MemoryCacheEviction):
                 raise ValueError(f"Unknown policy {policy}")
             self._cache.popitem = popitem_wrapper(self._cache.popitem, on_evict, clean_size)
 
-def init_gptcache_redis(cache_obj: Cache, hashed_llm: str, cache_config: dict, embedding_model: str, similarity_threshold: float):
+def init_gptcache_redis(cache_obj: Cache, hashed_llm: str, cache_config: dict, embedding_model: str, similarity_threshold: float, **redis_params):
     """Initialise the GPT cache object."""
     print_verbose(f"Initialise the GPT cache object: init_gptcache_redis.{cache_config}")
     endpoint_id = cache_config.get("endpoint_id", "1234")
@@ -78,19 +78,21 @@ def init_gptcache_redis(cache_obj: Cache, hashed_llm: str, cache_config: dict, e
         print_verbose(f"gptcache redis semantic-cache using Onnx embeddings")
         embeddings = Onnx()
     eviction_policy = cache_config.get("eviction_policy", {})
-
+    host=redis_params["host"]
+    port=redis_params["port"]
+    password=redis_params["password"]
     data_manager = manager_factory(
         "redis,redis",
         scalar_params={
-            "redis_host": os.getenv("REDIS_HOST", "localhost"),
-            "redis_port": os.getenv("REDIS_PORT", "6342"),
-            "password": os.getenv("REDIS_PASSWORD", "budpassword"),
+            "redis_host": host,
+            "redis_port": port,
+            "password": password,
             "global_key_prefix": f"cache_{endpoint_id}_{hashed_llm}",
         },
         vector_params={
-            "host": os.getenv("REDIS_HOST", "localhost"),
-            "port": os.getenv("REDIS_PORT", "6342"),
-            "password": os.getenv("REDIS_PASSWORD", "budpassword"),
+            "host": host,
+            "port": port,
+            "password": password,
             "dimension": embeddings.dimension,
             "top_k": 1,
             "collection_name": f"index_{endpoint_id}_{hashed_llm}",
@@ -110,7 +112,6 @@ def init_gptcache_redis(cache_obj: Cache, hashed_llm: str, cache_config: dict, e
 
     ids = data_manager.s.get_ids(deleted=False)
     data_manager.eviction_base.put(ids)
-    from gptcache.processor.pre import get_prompt
     init_similar_cache(
         cache_obj=cache_obj,
         embedding=embeddings,
@@ -137,7 +138,6 @@ class RedisGPTCache(BaseCache, GPTCache):
         print_verbose(
             "gptcache redis semantic-cache initializing..."
         )
-        GPTCache.__init__(self, init_gptcache_redis)
         self.similarity_threshold = similarity_threshold
         self.embedding_model = embedding_model
         if redis_url is None:
@@ -154,6 +154,12 @@ class RedisGPTCache(BaseCache, GPTCache):
 
             redis_url = "redis://:" + password + "@" + host + ":" + port
         print_verbose(f"gptcache redis semantic-cache redis_url: {redis_url}")
+        self.redis_params = {
+            "host": host,
+            "port": port,
+            "password": password
+        }
+        GPTCache.__init__(self, init_gptcache_redis)
         if use_async == False:
             print_verbose("gptcache redis semantic-cache using sync redis client")
        
@@ -163,8 +169,8 @@ class RedisGPTCache(BaseCache, GPTCache):
         _gptcache = Cache()
         if self.init_gptcache_func is not None:
             sig = inspect.signature(self.init_gptcache_func)
-            if len(sig.parameters) == 5:
-                self.init_gptcache_func(_gptcache, llm_string, cache_config, self.embedding_model, self.similarity_threshold)
+            if len(sig.parameters) == 6:
+                self.init_gptcache_func(_gptcache, llm_string, cache_config, self.embedding_model, self.similarity_threshold, **self.redis_params)
             elif len(sig.parameters) == 3:
                 self.init_gptcache_func(_gptcache, llm_string, cache_config)
             elif len(sig.parameters) == 2:
