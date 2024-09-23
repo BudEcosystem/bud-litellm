@@ -2087,7 +2087,7 @@ class Cache:
     def __init__(
         self,
         type: Optional[
-            Literal["local", "redis", "redis-semantic", "s3", "disk", "qdrant-semantic"]
+            Literal["local", "redis", "redis-semantic", "s3", "disk", "qdrant-semantic", "gpt_cache_redis"]
         ] = "local",
         mode: Optional[
             CacheMode
@@ -2151,14 +2151,14 @@ class Cache:
         Initializes the cache based on the given type.
 
         Args:
-            type (str, optional): The type of cache to initialize. Can be "local", "redis", "redis-semantic", "qdrant-semantic", "s3" or "disk". Defaults to "local".
+            type (str, optional): The type of cache to initialize. Can be "local", "redis", "redis-semantic", "qdrant-semantic", "s3", "gpt_cache_redis" or "disk". Defaults to "local".
             host (str, optional): The host address for the Redis cache. Required if type is "redis".
             port (int, optional): The port number for the Redis cache. Required if type is "redis".
             password (str, optional): The password for the Redis cache. Required if type is "redis".
             qdrant_api_base (str, optional): The url for your qdrant cluster. Required if type is "qdrant-semantic".
             qdrant_api_key (str, optional): The api_key for the local or cloud qdrant cluster.
             qdrant_collection_name (str, optional): The name for your qdrant collection. Required if type is "qdrant-semantic".
-            similarity_threshold (float, optional): The similarity threshold for semantic-caching, Required if type is "redis-semantic" or "qdrant-semantic".
+            similarity_threshold (float, optional): The similarity threshold for semantic-caching, Required if type is "redis-semantic" or "qdrant-semantic" or "gpt_cache_redis".
 
             supported_call_types (list, optional): List of call types to cache for. Defaults to cache == on for all call types.
             **kwargs: Additional keyword arguments for redis.Redis() cache
@@ -2216,6 +2216,17 @@ class Cache:
             )
         elif type == "disk":
             self.cache = DiskCache(disk_cache_dir=disk_cache_dir)
+        elif type == "gpt_cache_redis":
+            from .gpt_redis_cache import BudServeGPTCache
+            self.cache = BudServeGPTCache(
+                host,
+                port,
+                password,
+                similarity_threshold=similarity_threshold,
+                use_async=redis_semantic_cache_use_async,
+                embedding_model=redis_semantic_cache_embedding_model,
+                **kwargs,
+            )
         if "cache" not in litellm.input_callback:
             litellm.input_callback.append("cache")
         if "cache" not in litellm.success_callback:
@@ -2233,7 +2244,7 @@ class Cache:
             self.ttl = default_in_memory_ttl
 
         if (
-            self.type == "redis" or self.type == "redis-semantic"
+            self.type == "redis" or self.type == "redis-semantic" or self.type == "gpt_cache_redis"
         ) and default_in_redis_ttl is not None:
             self.ttl = default_in_redis_ttl
 
@@ -2265,8 +2276,8 @@ class Cache:
         # sort kwargs by keys, since model: [gpt-4, temperature: 0.2, max_tokens: 200] == [temperature: 0.2, max_tokens: 200, model: gpt-4]
         completion_kwargs = [
             "model",
-            "messages",
-            "prompt",
+            # "messages",
+            # "prompt",
             "temperature",
             "top_p",
             "n",

@@ -48,6 +48,9 @@ google-cloud-kms = {version = "^2.21.3", optional = true}
 resend = {version = "^0.8.0", optional = true}
 pynacl = {version = "^1.5.0", optional = true}
 
+langchain-community = {version = "0.2.2", optional = true}
+langchain-huggingface = {version = "0.0.3", optional = true}
+langchain = {version = "0.2.2", optional = true}
 [tool.poetry.extras]
 proxy = [
     "gunicorn",
@@ -71,6 +74,12 @@ extra_proxy = [
     "azure-keyvault-secrets",
     "google-cloud-kms",
     "resend",
+]
+
+gpt_cache = [
+    "langchain",
+    "langchain-community",
+    "langchain-huggingface",
 ]
 
 [tool.isort]
