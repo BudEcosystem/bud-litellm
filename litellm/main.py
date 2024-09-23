@@ -671,7 +671,6 @@ def completion(
         - If 'mock_response' is provided, a mock completion response is returned for testing or debugging.
     """
     ######### unpacking kwargs #####################
-    kwargs.pop('cache_config', None)
     args = locals()
     api_base = kwargs.get("api_base", None)
     mock_response = kwargs.get("mock_response", None)

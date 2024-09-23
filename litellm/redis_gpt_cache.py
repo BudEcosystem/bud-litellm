@@ -231,7 +231,6 @@ class RedisGPTCache(BaseCache, GPTCache):
         cache_config["metric_config"] = {"request_start_time" : time.time()}
         
         llm_cache = self._get_gptcache(key, cache_config)
-        
         # query
         # get the messages
         messages = kwargs["messages"]
