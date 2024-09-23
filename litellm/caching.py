@@ -1691,355 +1691,8 @@ class DualCache(BaseCache):
             self.in_memory_cache.delete_cache(key)
         if self.redis_cache is not None:
             self.redis_cache.delete_cache(key)
-# --------------my code-------------------------------
 
-import ast
-import json
-import inspect
-from typing import List, Optional, Any, Dict, Callable, Tuple
-
-import hashlib
-import cachetools
-from gptcache import Cache as Cachegpt, Config
-from gptcache.manager import manager_factory
-from gptcache.manager.eviction.memory_cache import MemoryCacheEviction, popitem_wrapper
-from gptcache.adapter.api import init_similar_cache, get, put
-from gptcache.embedding import LangChain, Onnx
-from gptcache.similarity_evaluation import SbertCrossencoderEvaluation
-from langchain_community.cache import GPTCache
-
-from .config import BudServeCacheConfig
-
-
-# def run_async_log_time_func(function_name: str, time_taken: float) -> None:
-#     loop = asyncio.get_event_loop()
-#     if not loop.is_running():
-#         # Create a new event loop if the current one is not running
-#         new_loop = asyncio.new_event_loop()
-#         asyncio.set_event_loop(new_loop)
-#         _ = new_loop.run_until_complete(log_time_func(function_name, time_taken))
-#         # new_loop.close()
-#     else:
-#         _ = loop.run_in_executor(
-#             None, lambda: asyncio.run(log_time_func(function_name, time_taken))
-#         )
-def get_all_content(data: Dict[str, Any]) -> Any:
-    """get all content of the message list
-
-    :param data: the user llm request data
-    :type data: Dict[str, Any]
-    """
-    s = ""
-    messages = data.get("messages")
-    for i, message in enumerate(messages):
-        if i == len(messages) - 1:
-            s += message["content"]
-        else:
-            s += message["content"] + "\n"
-    return s
-
-
-def get_prompt(data: Dict[str, Any]) -> Any:
-    """get the prompt of the llm request params
-
-    :param data: the user llm request data
-    :type data: Dict[str, Any]
-    """
-    return data.get("prompt")
-
-
-class BudServeMemoryCacheEviction(MemoryCacheEviction):
-    """ This class `BudServeMemoryCacheEviction` is a subclass of `MemoryCacheEviction`
-    that implements memory cache eviction policies such as LRU and TTL with customizable
-    parameters. """
-
-    def __init__(
-        self,
-        policy: str = "LRU",
-        maxsize: int = 1000,
-        clean_size: int = 0,
-        on_evict: Callable[[List[Any]], None] = None,
-        ttl: Optional[int] = None,
-        **kwargs,
-    ):
-        try:
-            super().__init__(policy, maxsize, clean_size, on_evict, **kwargs)
-        except ValueError:
-            self._policy = policy.upper()
-            if self._policy == "TTL":
-                if not ttl:
-                    raise ValueError("TTL policy requires ttl parameter")
-                self._cache = cachetools.TTLCache(maxsize=maxsize, ttl=ttl, **kwargs)
-            else:
-                raise ValueError(f"Unknown policy {policy}")
-            self._cache.popitem = popitem_wrapper(self._cache.popitem, on_evict, clean_size)
-
-
-def get_hashed_name(name):
-    return hashlib.sha256(name.encode()).hexdigest()
-
-def init_gptcache_redis(cache_obj: Cachegpt, llm: str, cache_config: BudServeCacheConfig):
-    """Initialise the GPT cache object."""
-    print_verbose("Initialise the GPT cache object: init_gptcache_redis.")
-    # tuple_list = ast.literal_eval(llm)
-    # llm_param_dict = dict(tuple_list)
-    endpoint_id = "123e4567-e89b-12d3-a456-426614174000"
-    # endpoint_id = llm_param_dict.get("endpoint_id", "")
-    hashed_llm = get_hashed_name(llm)
-
-    if cache_config.embeddings:
-        embeddings = LangChain(embeddings=cache_config.embeddings)
-    else:
-        verbose_logger.debug("ONNX embeddings for gptcache")
-        embeddings = Onnx()
-
-    data_manager = manager_factory(
-        "redis,redis",
-        scalar_params={
-            "redis_host": os.getenv("REDIS_HOST"),
-            "redis_port": os.getenv("REDIS_PORT"),
-            "password": os.getenv("REDIS_PASSWORD"),
-            "global_key_prefix": f"cache_{endpoint_id}_{hashed_llm}",
-        },
-        vector_params={
-            "host": os.getenv("REDIS_HOST"),
-            "port": os.getenv("REDIS_PORT"),
-            "password": os.getenv("REDIS_PASSWORD"),
-            "dimension": embeddings.dimension,
-            "top_k": 1,
-            "collection_name": f"index_{endpoint_id}_{hashed_llm}",
-            "namespace": f"namespace_{endpoint_id}_{hashed_llm}",
-        },
-        eviction_manager="no_op_eviction"
-    )
-
-    eviction_params = {
-        "maxsize": cache_config.eviction_policy.max_size,
-        "policy": cache_config.eviction_policy.policy,
-        "clean_size": int(cache_config.eviction_policy.max_size * 0.2) or 1,
-        "ttl": cache_config.eviction_policy.ttl,
-        "on_evict": data_manager._clear,
-    }
-    data_manager.eviction_base = BudServeMemoryCacheEviction(**eviction_params)
-
-    ids = data_manager.s.get_ids(deleted=False)
-    data_manager.eviction_base.put(ids)
-    from gptcache.processor.pre import get_prompt
-    init_similar_cache(
-        cache_obj=cache_obj,
-        pre_func=get_prompt,
-        embedding=embeddings,
-        data_manager=data_manager,
-        evaluation=SbertCrossencoderEvaluation(),
-        config=Config(
-            similarity_threshold=cache_config.score_threshold,
-            auto_flush=1,
-        )
-    )
-
-class RedisGPTCache(BaseCache, GPTCache):
-    def __init__(self):
-        GPTCache.__init__(self, init_gptcache_redis)
-
-    def _new_gptcache(self, llm_string: str, cache_config: BudServeCacheConfig) -> Any:
-        """New gptcache object"""
-        _gptcache = Cachegpt()
-        if self.init_gptcache_func is not None:
-            sig = inspect.signature(self.init_gptcache_func)
-            if len(sig.parameters) == 3:
-                self.init_gptcache_func(_gptcache, llm_string, cache_config)
-            elif len(sig.parameters) == 2:
-                self.init_gptcache_func(_gptcache, llm_string)  # type: ignore[call-arg]
-            else:
-                self.init_gptcache_func(_gptcache)  # type: ignore[call-arg]
-        else:
-            raise ValueError("init_gptcache_func is not defined.")
-
-        self.gptcache_dict[llm_string] = _gptcache
-        return _gptcache
-
-    def _get_gptcache(self, llm_string: str, cache_config: BudServeCacheConfig) -> Any:
-        """Get a cache object."""
-        # import pdb; pdb.set_trace()
-        _gptcache = self.gptcache_dict.get(llm_string, None)
-        if not _gptcache:
-            _gptcache = self._new_gptcache(llm_string, cache_config)
-        return _gptcache
-
-    def lookup(self, prompt: str, llm_string: str, cache_config: BudServeCacheConfig) -> Tuple[Optional[List[dict[str, Any]]], Dict[str, Any]]:
-        """Look up based on prompt and llm_string."""
-        print_verbose("IN LOOKUP CACHEXX")
-        llm_cache = self._get_gptcache(llm_string, cache_config)
-        print_verbose(f"llmcachexx{llm_cache, llm_string}")
-        results, cache_metric = get(
-            prompt,
-            cache_obj=llm_cache,
-            cache_metric_config=(
-                cache_config.metric_config.model_dump() if cache_config.metric_config else {}
-            )
-        )
-        print_verbose(f"IN LOOKUP RETURNING CACHEXX {results}")
-        if results:
-            print_verbose(f"IN LOOKUP RETURNING CACHEXX {[json.loads(results)]}")
-        return [json.loads(results)] if results is not None else None, cache_metric
-
-    def update(self, prompt: str, llm_string: str, result: str, cache_config: BudServeCacheConfig) -> Dict[str, Any]:
-        """Update cache based on prompt and llm_string."""
-        print_verbose("IN UPDATE CACHEXX")
-        llm_cache = self._get_gptcache(llm_string, cache_config)
-        cache_metric = put(
-            prompt,
-            result,
-            cache_obj=llm_cache,
-            cache_metric_config=(
-                cache_config.metric_config.model_dump() if cache_config.metric_config else {}
-            )
-        )
-        print_verbose(f"IN UPDATE RETURNING CACHEXX {cache_metric}")
-        return cache_metric
-
-    def get_eviction_policy_options(self) -> Dict[str, Any]:
-        return {
-            "LRU": {
-                "name": "Least Recently Used",
-                "description": "Evict the least recently used items first",
-            },
-            "LFU": {
-                "name": "Least Frequently Used",
-                "description": "Evict the least frequently used items first",
-            },
-            "FIFO": {
-                "name": "First In First Out",
-                "description": "Evict the oldest items first",
-            },
-            "RR" : {
-                "name": "Random Replacement",
-                "description": "Evict a random item",
-            },
-            "TTL" : {
-                "name": "Time To Live",
-                "description": "Evict items after a certain time period",
-            }
-        }
-
-    def set_cache(self, key: str, value: Any, **kwargs):
-        """Set cache for the given key."""
-        print_verbose("IN SET CACHEXX")
-        print_verbose(f"key : {key}, type: {type(key)}...value:{value}, type: {type(value)}")
-        messages=kwargs.get("messages")
-        cache_config=kwargs.get("cache_config", None)
-        if cache_config == None:
-            # ------------------------------------------------------------------
-            from .config import BudServeCacheConfig, EvictionPolicy, CacheMetricConfig
-            import uuid
-            eviction_policy = EvictionPolicy(
-                        policy=os.getenv("CACHE_EVICTION_POLICY"),
-                        max_size=int(os.getenv("CACHE_MAX_SIZE")),  # Ensure max_size is an integer
-                        ttl=int(os.getenv("CACHE_TTL")) if os.getenv("CACHE_TTL") else None
-                    )
-
-            cache_config = BudServeCacheConfig(
-                embedding_model=os.getenv("CACHE_EMBEDDING_MODEL"),
-                eviction_policy=eviction_policy,
-                score_threshold=float(os.getenv("CACHE_SCORE_THRESHOLD"))
-            )
-            db_endpoint = type("DBEndpoint", (), {
-            "id": uuid.uuid4(),
-            "project_id": uuid.uuid4(),
-            "model_id": uuid.uuid4(),
-            "url": "https://api.example.com/endpoint"
-            })
-
-            metric_request_id = uuid.uuid4()
-            engine = "openai" 
-            cache_config.metric_config = CacheMetricConfig(
-                endpoint_id=db_endpoint.id,
-                project_id=db_endpoint.project_id,
-                model_id=db_endpoint.model_id,
-                api_endpoint=db_endpoint.url,
-                metric_request_id=metric_request_id,
-                engine=engine,
-                request_start_time=time.time(),
-            )
-            cache_metrics_enabled = cache_config.metric_config.enable_metrics
-            # -----------------------------------------------------------
-            pass
-        prompt=get_all_content({"messages":messages})
-        print_verbose(f"IN SET CACHEXX prompt {prompt}")
-        value=json.dumps(value)
-        print_verbose(f"IN SET CACHEXX value {value, type(value)}")
-        # for result in value:
-        #     cache_metrics = self.update(
-        #         llm_string=key, prompt= prompt, result= result, cache_config=cache_config
-        #     )
-        return self.update(llm_string=key, prompt= prompt, result= value, cache_config=cache_config)
-
-
-    async def async_set_cache(self, key: str, value: Any, **kwargs):
-        """Asynchronous cache insertion."""
-        # Directly call set_cache asynchronously
-        return await self.set_cache(key, value, **kwargs)
-    def get_cache(self, key: str, **kwargs):
-        """Get cache for the given key."""
-        print_verbose("IN GET CACHEXX RGC") 
-        messages=kwargs.get("messages", [])
-        prompt=get_all_content({"messages":messages})
-        cache_config=kwargs.get("cache_config", None)
-        if cache_config == None:
-            # ------------------------------------------------------------------
-            from .config import BudServeCacheConfig, EvictionPolicy, CacheMetricConfig
-            import uuid
-            eviction_policy = EvictionPolicy(
-                        policy=os.getenv("CACHE_EVICTION_POLICY"),
-                        max_size=int(os.getenv("CACHE_MAX_SIZE")),  # Ensure max_size is an integer
-                        ttl=int(os.getenv("CACHE_TTL")) if os.getenv("CACHE_TTL") else None
-                    )
-
-            cache_config = BudServeCacheConfig(
-                embedding_model=os.getenv("CACHE_EMBEDDING_MODEL"),
-                eviction_policy=eviction_policy,
-                score_threshold=float(os.getenv("CACHE_SCORE_THRESHOLD"))
-            )
-            db_endpoint = type("DBEndpoint", (), {
-            "id": uuid.uuid4(),
-            "project_id": uuid.uuid4(),
-            "model_id": uuid.uuid4(),
-            "url": "https://api.example.com/endpoint"
-            })
-
-            metric_request_id = uuid.uuid4()
-            engine = "openai" 
-            cache_config.metric_config = CacheMetricConfig(
-                endpoint_id=db_endpoint.id,
-                project_id=db_endpoint.project_id,
-                model_id=db_endpoint.model_id,
-                api_endpoint=db_endpoint.url,
-                metric_request_id=metric_request_id,
-                engine=engine,
-                request_start_time=time.time(),
-            )
-            cache_metrics_enabled = cache_config.metric_config.enable_metrics
-            # -----------------------------------------------------------
-            pass
-        print_verbose(f"IN GET CACHEXX RGC, cache_config = {cache_config}") 
-        results, cache_metric= self.lookup(prompt=prompt, llm_string=key, cache_config=cache_config)
-        return results[0] if results else None
-
-    async def async_get_cache(self, key: str, **kwargs):
-        """Asynchronous cache retrieval."""
-        # Directly call get_cache asynchronously
-        return await self.get_cache(key, **kwargs)
-    
-    async def batch_cache_write(self, result: List[Tuple[str, Any]], *args, **kwargs):
-        """Batch write results to cache."""
-        for key, value in result:
-            await self.async_set_cache(key, value, **kwargs)
-
-    async def disconnect(self):
-        """Perform any necessary cleanup on disconnect."""
-        verbose_logger.debug("Disconnecting from cache system...")  
-
-
+from .redis_gpt_cache import RedisGPTCache
 
 #### LiteLLM.Completion / Embedding Cache ####
 class Cache:
@@ -2092,6 +1745,7 @@ class Cache:
         s3_config: Optional[Any] = None,
         s3_path: Optional[str] = None,
         redis_semantic_cache_use_async=False,
+        redis_gptcache_use_async=False,
         redis_semantic_cache_embedding_model="text-embedding-ada-002",
         redis_gptcache_embedding_model="sentence-transformers/all-MiniLM-L6-v2",
         redis_flush_size=None,
@@ -2134,6 +1788,12 @@ class Cache:
             )
         elif type == "redis-gptcache":
             self.cache = RedisGPTCache(
+                host,
+                port,
+                password,
+                similarity_threshold=similarity_threshold,
+                use_async=redis_gptcache_use_async,
+                embedding_model=redis_gptcache_embedding_model,
                 **kwargs,
             )
         elif type == "local":
@@ -2203,8 +1863,8 @@ class Cache:
         # sort kwargs by keys, since model: [gpt-4, temperature: 0.2, max_tokens: 200] == [temperature: 0.2, max_tokens: 200, model: gpt-4]
         completion_kwargs = [
             "model",
-            "messages",
-            "prompt",
+            # "messages",
+            # "prompt",
             "temperature",
             "top_p",
             "n",
@@ -2384,7 +2044,7 @@ class Cache:
                 max_age = cache_control_args.get(
                     "s-max-age", cache_control_args.get("s-maxage", float("inf"))
                 )
-                print(f"kwxx {kwargs}")
+                print(f"in get cache kwargs {kwargs}")
                 cached_result = self.cache.get_cache(key=cache_key, **kwargs)
                 print_verbose(f"returning from get_cache of Cache {cached_result}")
                 return self._get_cache_logic(

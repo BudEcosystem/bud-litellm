@@ -728,41 +728,6 @@ def client(original_function):
 
     @wraps(original_function)
     def wrapper(*args, **kwargs):
-        print_verbose(f"xxargs {args},{kwargs}")
-
-        eviction_policy = EvictionPolicy(
-            policy=os.getenv("CACHE_EVICTION_POLICY"),
-            max_size=int(os.getenv("CACHE_MAX_SIZE")),  # Ensure max_size is an integer
-            ttl=int(os.getenv("CACHE_TTL")) if os.getenv("CACHE_TTL") else None
-        )
-
-        cache_config = BudServeCacheConfig(
-            embedding_model=os.getenv("CACHE_EMBEDDING_MODEL"),
-            eviction_policy=eviction_policy,
-            score_threshold=float(os.getenv("CACHE_SCORE_THRESHOLD"))
-        )
-        db_endpoint = type("DBEndpoint", (), {
-        "id": uuid.uuid4(),
-        "project_id": uuid.uuid4(),
-        "model_id": uuid.uuid4(),
-        "url": "https://api.example.com/endpoint"
-    })
-
-        metric_request_id = uuid.uuid4()
-        engine = "openai" 
-        cache_config.metric_config = CacheMetricConfig(
-            endpoint_id=db_endpoint.id,
-            project_id=db_endpoint.project_id,
-            model_id=db_endpoint.model_id,
-            api_endpoint=db_endpoint.url,
-            metric_request_id=metric_request_id,
-            engine=engine,
-            request_start_time=time.time(),
-        )
-        cache_metrics_enabled = cache_config.metric_config.enable_metrics
-
-
-        kwargs["cache_config"]=cache_config
         # DO NOT MOVE THIS. It always needs to run first
         # Check if this is an async function. If so only execute the async function
         if (

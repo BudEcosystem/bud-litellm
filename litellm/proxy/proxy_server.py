@@ -1488,7 +1488,9 @@ class ProxyConfig:
                     if cache_type == "redis-semantic":
                         # by default this should always be async
                         cache_params.update({"redis_semantic_cache_use_async": True})
-
+                    if cache_type == "redis-gptcache":
+                        # by default this should always be async
+                        cache_params.update({"redis_gptcache_use_async": True})
                     # users can pass os.environ/ variables on the proxy - we should read them from the env
                     for key, value in cache_params.items():
                         if type(value) is str and value.startswith("os.environ/"):
