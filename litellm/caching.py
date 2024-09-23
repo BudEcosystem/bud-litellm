@@ -2016,7 +2016,7 @@ class Cache:
                 max_age = cache_control_args.get(
                     "s-max-age", cache_control_args.get("s-maxage", float("inf"))
                 )
-                cached_result = self.cache.get_cache(key=cache_key, messages=messages)
+                cached_result = self.cache.get_cache(cache_key, messages=messages)
                 return self._get_cache_logic(
                     cached_result=cached_result, max_age=max_age
                 )
