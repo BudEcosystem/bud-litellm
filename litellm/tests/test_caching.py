@@ -1586,7 +1586,7 @@ def test_redis_semantic_cache_completion():
     print(f"response1: {response1}")
 
     random_number = random.randint(1, 100000)
-    
+
     response2 = completion(
         model="gpt-3.5-turbo",
         messages=[
