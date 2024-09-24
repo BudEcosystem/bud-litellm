@@ -173,11 +173,7 @@ class RedisGPTCache(BaseCache, GPTCache):
                     raise Exception("Redis host, port, and password must be provided")
 
             redis_url = "redis://:" + password + "@" + host + ":" + port
-        self.redis_params = {
-            "host": host,
-            "port": port,
-            "password": password
-        }
+        self.redis_params = {"host": host, "port": port, "password": password}
         GPTCache.__init__(self, init_gptcache_redis)
         print_verbose(f"gptcache redis semantic-cache redis_url: {redis_url}")
         self.redis_params = {"host": host, "port": port, "password": password}
