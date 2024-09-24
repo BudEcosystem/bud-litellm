@@ -30,6 +30,9 @@ async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
             user_api_key_cache,
         )
 
+        if prisma_client is None:
+            raise Exception("Prisma client not initialized")
+
         api_key = f"sk-{api_key}"
 
         route: str = get_request_route(request=request)
@@ -62,7 +65,7 @@ async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
                 "expiry": (datetime.now() + timedelta(days=1)).strftime(
                     "%Y-%m-%d %H:%M:%S"
                 ),
-                "max_budget": 0.005,
+                "max_budget": 1,
                 "model_budgets": {"gpt-4": 0.003, "gpt-3.5-turbo": 0.002},
             }
             valid_token = UserAPIKeyAuth(
@@ -71,6 +74,22 @@ async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
                 max_budget=credential_dict["max_budget"],
                 model_max_budget=credential_dict["model_budgets"],
             )
+            api_key_spend = await prisma_client.db.litellm_spendlogs.group_by(
+                by=["api_key"],
+                sum={"spend": True},
+                where={
+                    "AND": [
+                        {"api_key": valid_token.token},
+                    ]
+                },  # type: ignore
+            )
+            if (
+                len(api_key_spend) > 0
+                and "_sum" in api_key_spend[0]
+                and "spend" in api_key_spend[0]["_sum"]
+                and api_key_spend[0]["_sum"]["spend"]
+            ):
+                valid_token.spend = api_key_spend[0]["_sum"]["spend"]
             verbose_proxy_logger.debug(f"Valid token from DB >>> {valid_token}")
         verbose_proxy_logger.debug(f"Valid token spend >> {valid_token.spend}")
         if valid_token is not None:
