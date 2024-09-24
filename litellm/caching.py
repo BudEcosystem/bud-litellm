@@ -16,7 +16,8 @@ import logging
 import time
 import traceback
 from datetime import timedelta
-from typing import Any, BinaryIO, List, Literal, Optional, Union
+from enum import Enum
+from typing import Any, List, Literal, Optional, Union
 
 from openai._models import BaseModel as OpenAIObject
 
@@ -34,6 +35,11 @@ def print_verbose(print_statement):
             print(print_statement)  # noqa
     except:
         pass
+
+
+class CacheMode(str, Enum):
+    default_on = "default_on"
+    default_off = "default_off"
 
 
 class BaseCache:
@@ -201,8 +207,9 @@ class RedisCache(BaseCache):
         host=None,
         port=None,
         password=None,
-        redis_flush_size=100,
+        redis_flush_size: Optional[int] = 100,
         namespace: Optional[str] = None,
+        startup_nodes: Optional[List] = None,  # for redis-cluster
         **kwargs,
     ):
         import redis
@@ -218,7 +225,8 @@ class RedisCache(BaseCache):
             redis_kwargs["port"] = port
         if password is not None:
             redis_kwargs["password"] = password
-
+        if startup_nodes is not None:
+            redis_kwargs["startup_nodes"] = startup_nodes
         ### HEALTH MONITORING OBJECT ###
         if kwargs.get("service_logger_obj", None) is not None and isinstance(
             kwargs["service_logger_obj"], ServiceLogging
@@ -236,7 +244,10 @@ class RedisCache(BaseCache):
         self.namespace = namespace
         # for high traffic, we store the redis results in memory and then batch write to redis
         self.redis_batch_writing_buffer: list = []
-        self.redis_flush_size = redis_flush_size
+        if redis_flush_size is None:
+            self.redis_flush_size: int = 100
+        else:
+            self.redis_flush_size = redis_flush_size
         self.redis_version = "Unknown"
         try:
             self.redis_version = self.redis_client.info()["redis_version"]
@@ -246,7 +257,7 @@ class RedisCache(BaseCache):
         ### ASYNC HEALTH PING ###
         try:
             # asyncio.get_running_loop().create_task(self.ping())
-            result = asyncio.get_running_loop().create_task(self.ping())
+            _ = asyncio.get_running_loop().create_task(self.ping())
         except Exception as e:
             if "no running event loop" in str(e):
                 verbose_logger.debug(
@@ -296,40 +307,25 @@ class RedisCache(BaseCache):
                 f"LiteLLM Caching: set() - Got exception from REDIS : {str(e)}"
             )
 
-    def increment_cache(self, key, value: int, **kwargs) -> int:
+    def increment_cache(
+        self, key, value: int, ttl: Optional[float] = None, **kwargs
+    ) -> int:
         _redis_client = self.redis_client
         start_time = time.time()
         try:
             result = _redis_client.incr(name=key, amount=value)
-            ## LOGGING ##
-            end_time = time.time()
-            _duration = end_time - start_time
-            asyncio.create_task(
-                self.service_logger_obj.service_success_hook(
-                    service=ServiceTypes.REDIS,
-                    duration=_duration,
-                    call_type="increment_cache",
-                    start_time=start_time,
-                    end_time=end_time,
-                    parent_otel_span=_get_parent_otel_span_from_kwargs(kwargs),
-                )
-            )
+
+            if ttl is not None:
+                # check if key already has ttl, if not -> set ttl
+                current_ttl = _redis_client.ttl(key)
+                if current_ttl == -1:
+                    # Key has no expiration
+                    _redis_client.expire(key, ttl)  # type: ignore
             return result
         except Exception as e:
             ## LOGGING ##
             end_time = time.time()
             _duration = end_time - start_time
-            asyncio.create_task(
-                self.service_logger_obj.async_service_failure_hook(
-                    service=ServiceTypes.REDIS,
-                    duration=_duration,
-                    error=e,
-                    call_type="increment_cache",
-                    start_time=start_time,
-                    end_time=end_time,
-                    parent_otel_span=_get_parent_otel_span_from_kwargs(kwargs),
-                )
-            )
             verbose_logger.error(
                 "LiteLLM Redis Caching: increment_cache() - Got exception from REDIS %s, Writing value=%s",
                 str(e),
@@ -338,10 +334,13 @@ class RedisCache(BaseCache):
             raise e
 
     async def async_scan_iter(self, pattern: str, count: int = 100) -> list:
+        from redis.asyncio import Redis
+
         start_time = time.time()
         try:
             keys = []
-            _redis_client = self.init_async_client()
+            _redis_client: Redis = self.init_async_client()  # type: ignore
+
             async with _redis_client as redis_client:
                 async for key in redis_client.scan_iter(
                     match=pattern + "*", count=count
@@ -381,9 +380,11 @@ class RedisCache(BaseCache):
             raise e
 
     async def async_set_cache(self, key, value, **kwargs):
+        from redis.asyncio import Redis
+
         start_time = time.time()
         try:
-            _redis_client = self.init_async_client()
+            _redis_client: Redis = self.init_async_client()  # type: ignore
         except Exception as e:
             end_time = time.time()
             _duration = end_time - start_time
@@ -404,6 +405,7 @@ class RedisCache(BaseCache):
                 str(e),
                 value,
             )
+            raise e
 
         key = self.check_and_fix_namespace(key=key)
         async with _redis_client as redis_client:
@@ -412,6 +414,10 @@ class RedisCache(BaseCache):
                 f"Set ASYNC Redis Cache: key: {key}\nValue {value}\nttl={ttl}"
             )
             try:
+                if not hasattr(redis_client, "set"):
+                    raise Exception(
+                        "Redis client cannot set cache. Attribute not found."
+                    )
                 await redis_client.set(name=key, value=json.dumps(value), ex=ttl)
                 print_verbose(
                     f"Successfully Set ASYNC Redis Cache: key: {key}\nValue {value}\nttl={ttl}"
@@ -453,12 +459,15 @@ class RedisCache(BaseCache):
         """
         Use Redis Pipelines for bulk write operations
         """
-        _redis_client = self.init_async_client()
+        from redis.asyncio import Redis
+
+        _redis_client: Redis = self.init_async_client()  # type: ignore
         start_time = time.time()
 
         print_verbose(
             f"Set Async Redis Cache: key list: {cache_list}\nttl={ttl}, redis_version={self.redis_version}"
         )
+        cache_value: Any = None
         try:
             async with _redis_client as redis_client:
                 async with redis_client.pipeline(transaction=True) as pipe:
@@ -470,6 +479,7 @@ class RedisCache(BaseCache):
                         )
                         json_cache_value = json.dumps(cache_value)
                         # Set the value with a TTL if it's provided.
+
                         if ttl is not None:
                             pipe.setex(cache_key, ttl, json_cache_value)
                         else:
@@ -518,9 +528,11 @@ class RedisCache(BaseCache):
     async def async_set_cache_sadd(
         self, key, value: List, ttl: Optional[float], **kwargs
     ):
+        from redis.asyncio import Redis
+
         start_time = time.time()
         try:
-            _redis_client = self.init_async_client()
+            _redis_client: Redis = self.init_async_client()  # type: ignore
         except Exception as e:
             end_time = time.time()
             _duration = end_time - start_time
@@ -598,12 +610,24 @@ class RedisCache(BaseCache):
         if len(self.redis_batch_writing_buffer) >= self.redis_flush_size:
             await self.flush_cache_buffer()  # logging done in here
 
-    async def async_increment(self, key, value: float, **kwargs) -> float:
-        _redis_client = self.init_async_client()
+    async def async_increment(
+        self, key, value: float, ttl: Optional[int] = None, **kwargs
+    ) -> float:
+        from redis.asyncio import Redis
+
+        _redis_client: Redis = self.init_async_client()  # type: ignore
         start_time = time.time()
         try:
             async with _redis_client as redis_client:
                 result = await redis_client.incrbyfloat(name=key, amount=value)
+
+                if ttl is not None:
+                    # check if key already has ttl, if not -> set ttl
+                    current_ttl = await redis_client.ttl(key)
+                    if current_ttl == -1:
+                        # Key has no expiration
+                        await redis_client.expire(key, ttl)
+
                 ## LOGGING ##
                 end_time = time.time()
                 _duration = end_time - start_time
@@ -705,7 +729,9 @@ class RedisCache(BaseCache):
             return key_value_dict
 
     async def async_get_cache(self, key, **kwargs):
-        _redis_client = self.init_async_client()
+        from redis.asyncio import Redis
+
+        _redis_client: Redis = self.init_async_client()  # type: ignore
         key = self.check_and_fix_namespace(key=key)
         start_time = time.time()
         async with _redis_client as redis_client:
@@ -899,6 +925,12 @@ class RedisCache(BaseCache):
 
     async def disconnect(self):
         await self.async_redis_conn_pool.disconnect(inuse_connections=True)
+
+    async def async_delete_cache(self, key: str):
+        _redis_client = self.init_async_client()
+        # keys is str
+        async with _redis_client as redis_client:
+            await redis_client.delete(key)
 
     def delete_cache(self, key):
         self.redis_client.delete(key)
@@ -1220,13 +1252,418 @@ class RedisSemanticCache(BaseCache):
         return await self.index.ainfo()
 
 
+class QdrantSemanticCache(BaseCache):
+    def __init__(
+        self,
+        qdrant_api_base=None,
+        qdrant_api_key=None,
+        collection_name=None,
+        similarity_threshold=None,
+        quantization_config=None,
+        embedding_model="text-embedding-ada-002",
+        host_type=None,
+    ):
+        import os
+
+        from litellm.llms.custom_httpx.http_handler import (
+            _get_httpx_client,
+            get_async_httpx_client,
+            httpxSpecialProvider,
+        )
+        from litellm.secret_managers.main import get_secret_str
+
+        if collection_name is None:
+            raise Exception("collection_name must be provided, passed None")
+
+        self.collection_name = collection_name
+        print_verbose(
+            f"qdrant semantic-cache initializing COLLECTION - {self.collection_name}"
+        )
+
+        if similarity_threshold is None:
+            raise Exception("similarity_threshold must be provided, passed None")
+        self.similarity_threshold = similarity_threshold
+        self.embedding_model = embedding_model
+        headers = {}
+
+        # check if defined as os.environ/ variable
+        if qdrant_api_base:
+            if isinstance(qdrant_api_base, str) and qdrant_api_base.startswith(
+                "os.environ/"
+            ):
+                qdrant_api_base = get_secret_str(qdrant_api_base)
+        if qdrant_api_key:
+            if isinstance(qdrant_api_key, str) and qdrant_api_key.startswith(
+                "os.environ/"
+            ):
+                qdrant_api_key = get_secret_str(qdrant_api_key)
+
+        qdrant_api_base = (
+            qdrant_api_base or os.getenv("QDRANT_URL") or os.getenv("QDRANT_API_BASE")
+        )
+        qdrant_api_key = qdrant_api_key or os.getenv("QDRANT_API_KEY")
+        headers = {"Content-Type": "application/json"}
+        if qdrant_api_key:
+            headers["api-key"] = qdrant_api_key
+
+        if qdrant_api_base is None:
+            raise ValueError("Qdrant url must be provided")
+
+        self.qdrant_api_base = qdrant_api_base
+        self.qdrant_api_key = qdrant_api_key
+        print_verbose(f"qdrant semantic-cache qdrant_api_base: {self.qdrant_api_base}")
+
+        self.headers = headers
+
+        self.sync_client = _get_httpx_client()
+        self.async_client = get_async_httpx_client(
+            llm_provider=httpxSpecialProvider.Caching
+        )
+
+        if quantization_config is None:
+            print_verbose(
+                "Quantization config is not provided. Default binary quantization will be used."
+            )
+        collection_exists = self.sync_client.get(
+            url=f"{self.qdrant_api_base}/collections/{self.collection_name}/exists",
+            headers=self.headers,
+        )
+        if collection_exists.status_code != 200:
+            raise ValueError(
+                f"Error from qdrant checking if /collections exist {collection_exists.text}"
+            )
+
+        if collection_exists.json()["result"]["exists"]:
+            collection_details = self.sync_client.get(
+                url=f"{self.qdrant_api_base}/collections/{self.collection_name}",
+                headers=self.headers,
+            )
+            self.collection_info = collection_details.json()
+            print_verbose(
+                f"Collection already exists.\nCollection details:{self.collection_info}"
+            )
+        else:
+            if quantization_config is None or quantization_config == "binary":
+                quantization_params = {
+                    "binary": {
+                        "always_ram": False,
+                    }
+                }
+            elif quantization_config == "scalar":
+                quantization_params = {
+                    "scalar": {"type": "int8", "quantile": 0.99, "always_ram": False}
+                }
+            elif quantization_config == "product":
+                quantization_params = {
+                    "product": {"compression": "x16", "always_ram": False}
+                }
+            else:
+                raise Exception(
+                    "Quantization config must be one of 'scalar', 'binary' or 'product'"
+                )
+
+            new_collection_status = self.sync_client.put(
+                url=f"{self.qdrant_api_base}/collections/{self.collection_name}",
+                json={
+                    "vectors": {"size": 1536, "distance": "Cosine"},
+                    "quantization_config": quantization_params,
+                },
+                headers=self.headers,
+            )
+            if new_collection_status.json()["result"]:
+                collection_details = self.sync_client.get(
+                    url=f"{self.qdrant_api_base}/collections/{self.collection_name}",
+                    headers=self.headers,
+                )
+                self.collection_info = collection_details.json()
+                print_verbose(
+                    f"New collection created.\nCollection details:{self.collection_info}"
+                )
+            else:
+                raise Exception("Error while creating new collection")
+
+    def _get_cache_logic(self, cached_response: Any):
+        if cached_response is None:
+            return cached_response
+        try:
+            cached_response = json.loads(
+                cached_response
+            )  # Convert string to dictionary
+        except:
+            cached_response = ast.literal_eval(cached_response)
+        return cached_response
+
+    def set_cache(self, key, value, **kwargs):
+        print_verbose(f"qdrant semantic-cache set_cache, kwargs: {kwargs}")
+        import uuid
+
+        # get the prompt
+        messages = kwargs["messages"]
+        prompt = ""
+        for message in messages:
+            prompt += message["content"]
+
+        # create an embedding for prompt
+        embedding_response = litellm.embedding(
+            model=self.embedding_model,
+            input=prompt,
+            cache={"no-store": True, "no-cache": True},
+        )
+
+        # get the embedding
+        embedding = embedding_response["data"][0]["embedding"]
+
+        value = str(value)
+        assert isinstance(value, str)
+
+        data = {
+            "points": [
+                {
+                    "id": str(uuid.uuid4()),
+                    "vector": embedding,
+                    "payload": {
+                        "text": prompt,
+                        "response": value,
+                    },
+                },
+            ]
+        }
+        keys = self.sync_client.put(
+            url=f"{self.qdrant_api_base}/collections/{self.collection_name}/points",
+            headers=self.headers,
+            json=data,
+        )
+        return
+
+    def get_cache(self, key, **kwargs):
+        print_verbose(f"sync qdrant semantic-cache get_cache, kwargs: {kwargs}")
+
+        # get the messages
+        messages = kwargs["messages"]
+        prompt = ""
+        for message in messages:
+            prompt += message["content"]
+
+        # convert to embedding
+        embedding_response = litellm.embedding(
+            model=self.embedding_model,
+            input=prompt,
+            cache={"no-store": True, "no-cache": True},
+        )
+
+        # get the embedding
+        embedding = embedding_response["data"][0]["embedding"]
+
+        data = {
+            "vector": embedding,
+            "params": {
+                "quantization": {
+                    "ignore": False,
+                    "rescore": True,
+                    "oversampling": 3.0,
+                }
+            },
+            "limit": 1,
+            "with_payload": True,
+        }
+
+        search_response = self.sync_client.post(
+            url=f"{self.qdrant_api_base}/collections/{self.collection_name}/points/search",
+            headers=self.headers,
+            json=data,
+        )
+        results = search_response.json()["result"]
+
+        if results == None:
+            return None
+        if isinstance(results, list):
+            if len(results) == 0:
+                return None
+
+        similarity = results[0]["score"]
+        cached_prompt = results[0]["payload"]["text"]
+
+        # check similarity, if more than self.similarity_threshold, return results
+        print_verbose(
+            f"semantic cache: similarity threshold: {self.similarity_threshold}, similarity: {similarity}, prompt: {prompt}, closest_cached_prompt: {cached_prompt}"
+        )
+        if similarity >= self.similarity_threshold:
+            # cache hit !
+            cached_value = results[0]["payload"]["response"]
+            print_verbose(
+                f"got a cache hit, similarity: {similarity}, Current prompt: {prompt}, cached_prompt: {cached_prompt}"
+            )
+            return self._get_cache_logic(cached_response=cached_value)
+        else:
+            # cache miss !
+            return None
+        pass
+
+    async def async_set_cache(self, key, value, **kwargs):
+        import uuid
+
+        from litellm.proxy.proxy_server import llm_model_list, llm_router
+
+        print_verbose(f"async qdrant semantic-cache set_cache, kwargs: {kwargs}")
+
+        # get the prompt
+        messages = kwargs["messages"]
+        prompt = ""
+        for message in messages:
+            prompt += message["content"]
+        # create an embedding for prompt
+        router_model_names = (
+            [m["model_name"] for m in llm_model_list]
+            if llm_model_list is not None
+            else []
+        )
+        if llm_router is not None and self.embedding_model in router_model_names:
+            user_api_key = kwargs.get("metadata", {}).get("user_api_key", "")
+            embedding_response = await llm_router.aembedding(
+                model=self.embedding_model,
+                input=prompt,
+                cache={"no-store": True, "no-cache": True},
+                metadata={
+                    "user_api_key": user_api_key,
+                    "semantic-cache-embedding": True,
+                    "trace_id": kwargs.get("metadata", {}).get("trace_id", None),
+                },
+            )
+        else:
+            # convert to embedding
+            embedding_response = await litellm.aembedding(
+                model=self.embedding_model,
+                input=prompt,
+                cache={"no-store": True, "no-cache": True},
+            )
+
+        # get the embedding
+        embedding = embedding_response["data"][0]["embedding"]
+
+        value = str(value)
+        assert isinstance(value, str)
+
+        data = {
+            "points": [
+                {
+                    "id": str(uuid.uuid4()),
+                    "vector": embedding,
+                    "payload": {
+                        "text": prompt,
+                        "response": value,
+                    },
+                },
+            ]
+        }
+
+        keys = await self.async_client.put(
+            url=f"{self.qdrant_api_base}/collections/{self.collection_name}/points",
+            headers=self.headers,
+            json=data,
+        )
+        return
+
+    async def async_get_cache(self, key, **kwargs):
+        print_verbose(f"async qdrant semantic-cache get_cache, kwargs: {kwargs}")
+        from litellm.proxy.proxy_server import llm_model_list, llm_router
+
+        # get the messages
+        messages = kwargs["messages"]
+        prompt = ""
+        for message in messages:
+            prompt += message["content"]
+
+        router_model_names = (
+            [m["model_name"] for m in llm_model_list]
+            if llm_model_list is not None
+            else []
+        )
+        if llm_router is not None and self.embedding_model in router_model_names:
+            user_api_key = kwargs.get("metadata", {}).get("user_api_key", "")
+            embedding_response = await llm_router.aembedding(
+                model=self.embedding_model,
+                input=prompt,
+                cache={"no-store": True, "no-cache": True},
+                metadata={
+                    "user_api_key": user_api_key,
+                    "semantic-cache-embedding": True,
+                    "trace_id": kwargs.get("metadata", {}).get("trace_id", None),
+                },
+            )
+        else:
+            # convert to embedding
+            embedding_response = await litellm.aembedding(
+                model=self.embedding_model,
+                input=prompt,
+                cache={"no-store": True, "no-cache": True},
+            )
+
+        # get the embedding
+        embedding = embedding_response["data"][0]["embedding"]
+
+        data = {
+            "vector": embedding,
+            "params": {
+                "quantization": {
+                    "ignore": False,
+                    "rescore": True,
+                    "oversampling": 3.0,
+                }
+            },
+            "limit": 1,
+            "with_payload": True,
+        }
+
+        search_response = await self.async_client.post(
+            url=f"{self.qdrant_api_base}/collections/{self.collection_name}/points/search",
+            headers=self.headers,
+            json=data,
+        )
+
+        results = search_response.json()["result"]
+
+        if results == None:
+            kwargs.setdefault("metadata", {})["semantic-similarity"] = 0.0
+            return None
+        if isinstance(results, list):
+            if len(results) == 0:
+                kwargs.setdefault("metadata", {})["semantic-similarity"] = 0.0
+                return None
+
+        similarity = results[0]["score"]
+        cached_prompt = results[0]["payload"]["text"]
+
+        # check similarity, if more than self.similarity_threshold, return results
+        print_verbose(
+            f"semantic cache: similarity threshold: {self.similarity_threshold}, similarity: {similarity}, prompt: {prompt}, closest_cached_prompt: {cached_prompt}"
+        )
+
+        # update kwargs["metadata"] with similarity, don't rewrite the original metadata
+        kwargs.setdefault("metadata", {})["semantic-similarity"] = similarity
+
+        if similarity >= self.similarity_threshold:
+            # cache hit !
+            cached_value = results[0]["payload"]["response"]
+            print_verbose(
+                f"got a cache hit, similarity: {similarity}, Current prompt: {prompt}, cached_prompt: {cached_prompt}"
+            )
+            return self._get_cache_logic(cached_response=cached_value)
+        else:
+            # cache miss !
+            return None
+        pass
+
+    async def _collection_info(self):
+        return self.collection_info
+
+
 class S3Cache(BaseCache):
     def __init__(
         self,
         s3_bucket_name,
         s3_region_name=None,
         s3_api_version=None,
-        s3_use_ssl=True,
+        s3_use_ssl: Optional[bool] = True,
         s3_verify=None,
         s3_endpoint_url=None,
         s3_aws_access_key_id=None,
@@ -1314,7 +1751,7 @@ class S3Cache(BaseCache):
                 Bucket=self.bucket_name, Key=key
             )
 
-            if cached_response != None:
+            if cached_response is not None:
                 # cached_response is in `b{} convert it to ModelResponse
                 cached_response = (
                     cached_response["Body"].read().decode("utf-8")
@@ -1332,7 +1769,7 @@ class S3Cache(BaseCache):
             )
 
             return cached_response
-        except botocore.exceptions.ClientError as e:
+        except botocore.exceptions.ClientError as e:  # type: ignore
             if e.response["Error"]["Code"] == "NoSuchKey":
                 verbose_logger.debug(
                     f"S3 Cache: The specified key '{key}' does not exist in the S3 bucket."
@@ -1368,6 +1805,7 @@ class DualCache(BaseCache):
         redis_cache: Optional[RedisCache] = None,
         default_in_memory_ttl: Optional[float] = None,
         default_redis_ttl: Optional[float] = None,
+        always_read_redis: Optional[bool] = True,
     ) -> None:
         super().__init__()
         # If in_memory_cache is not provided, use the default InMemoryCache
@@ -1379,6 +1817,7 @@ class DualCache(BaseCache):
             default_in_memory_ttl or litellm.default_in_memory_ttl
         )
         self.default_redis_ttl = default_redis_ttl or litellm.default_redis_ttl
+        self.always_read_redis = always_read_redis
 
     def update_cache_ttl(
         self, default_in_memory_ttl: Optional[float], default_redis_ttl: Optional[float]
@@ -1438,8 +1877,12 @@ class DualCache(BaseCache):
                 if in_memory_result is not None:
                     result = in_memory_result
 
-            if result is None and self.redis_cache is not None and local_only == False:
-                # If not found in in-memory cache, try fetching from Redis
+            if (
+                (self.always_read_redis is True)
+                and self.redis_cache is not None
+                and local_only == False
+            ):
+                # If not found in in-memory cache or always_read_redis is True, try fetching from Redis
                 redis_result = self.redis_cache.get_cache(key, **kwargs)
 
                 if redis_result is not None:
@@ -1502,8 +1945,12 @@ class DualCache(BaseCache):
                 if in_memory_result is not None:
                     result = in_memory_result
 
-            if result is None and self.redis_cache is not None and local_only == False:
-                # If not found in in-memory cache, try fetching from Redis
+            if (
+                (self.always_read_redis is True)
+                and self.redis_cache is not None
+                and local_only == False
+            ):
+                # If not found in in-memory cache or always_read_redis is True, try fetching from Redis
                 redis_result = await self.redis_cache.async_get_cache(key, **kwargs)
 
                 if redis_result is not None:
@@ -1570,8 +2017,9 @@ class DualCache(BaseCache):
             if self.redis_cache is not None and local_only == False:
                 await self.redis_cache.async_set_cache(key, value, **kwargs)
         except Exception as e:
-            verbose_logger.error(f"LiteLLM Cache: Excepton async add_cache: {str(e)}")
-            verbose_logger.debug(traceback.format_exc())
+            verbose_logger.exception(
+                f"LiteLLM Cache: Excepton async add_cache: {str(e)}"
+            )
 
     async def async_batch_set_cache(
         self, cache_list: list, local_only: bool = False, **kwargs
@@ -1593,8 +2041,9 @@ class DualCache(BaseCache):
                     cache_list=cache_list, ttl=kwargs.get("ttl", None), **kwargs
                 )
         except Exception as e:
-            verbose_logger.error(f"LiteLLM Cache: Excepton async add_cache: {str(e)}")
-            verbose_logger.debug(traceback.format_exc())
+            verbose_logger.exception(
+                f"LiteLLM Cache: Excepton async add_cache: {str(e)}"
+            )
 
     async def async_increment_cache(
         self, key, value: float, local_only: bool = False, **kwargs
@@ -1618,9 +2067,7 @@ class DualCache(BaseCache):
 
             return result
         except Exception as e:
-            verbose_logger.error(f"LiteLLM Cache: Excepton async add_cache: {str(e)}")
-            verbose_logger.debug(traceback.format_exc())
-            raise e
+            raise e  # don't log if exception is raised
 
     async def async_set_cache_sadd(
         self, key, value: List, local_only: bool = False, **kwargs
@@ -1647,12 +2094,7 @@ class DualCache(BaseCache):
 
             return None
         except Exception as e:
-            verbose_logger.error(
-                "LiteLLM Cache: Excepton async set_cache_sadd: {}\n{}".format(
-                    str(e), traceback.format_exc()
-                )
-            )
-            raise e
+            raise e  # don't log, if exception is raised
 
     def flush_cache(self):
         if self.in_memory_cache is not None:
@@ -1669,14 +2111,26 @@ class DualCache(BaseCache):
         if self.redis_cache is not None:
             self.redis_cache.delete_cache(key)
 
+    async def async_delete_cache(self, key: str):
+        """
+        Delete a key from the cache
+        """
+        if self.in_memory_cache is not None:
+            self.in_memory_cache.delete_cache(key)
+        if self.redis_cache is not None:
+            await self.redis_cache.async_delete_cache(key)
+
 
 #### LiteLLM.Completion / Embedding Cache ####
 class Cache:
     def __init__(
         self,
         type: Optional[
-            Literal["local", "redis", "redis-semantic", "s3", "disk", "gpt_cache_redis"]
+            Literal["local", "redis", "redis-semantic", "s3", "disk", "qdrant-semantic", "gpt_cache_redis"]
         ] = "local",
+        mode: Optional[
+            CacheMode
+        ] = CacheMode.default_on,  # when default_on cache is always on, when default_off cache is opt in
         host: Optional[str] = None,
         port: Optional[str] = None,
         password: Optional[str] = None,
@@ -1722,19 +2176,28 @@ class Cache:
         s3_path: Optional[str] = None,
         redis_semantic_cache_use_async=False,
         redis_semantic_cache_embedding_model="text-embedding-ada-002",
-        redis_flush_size=None,
+        redis_flush_size: Optional[int] = None,
+        redis_startup_nodes: Optional[List] = None,
         disk_cache_dir=None,
+        qdrant_api_base: Optional[str] = None,
+        qdrant_api_key: Optional[str] = None,
+        qdrant_collection_name: Optional[str] = None,
+        qdrant_quantization_config: Optional[str] = None,
+        qdrant_semantic_cache_embedding_model="text-embedding-ada-002",
         **kwargs,
     ):
         """
         Initializes the cache based on the given type.
 
         Args:
-            type (str, optional): The type of cache to initialize. Can be "local", "redis", "redis-semantic", "s3" or "disk". Defaults to "local".
+            type (str, optional): The type of cache to initialize. Can be "local", "redis", "redis-semantic", "qdrant-semantic", "s3" or "disk". Defaults to "local".
             host (str, optional): The host address for the Redis cache. Required if type is "redis".
             port (int, optional): The port number for the Redis cache. Required if type is "redis".
             password (str, optional): The password for the Redis cache. Required if type is "redis".
-            similarity_threshold (float, optional): The similarity threshold for semantic-caching, Required if type is "redis-semantic"
+            qdrant_api_base (str, optional): The url for your qdrant cluster. Required if type is "qdrant-semantic".
+            qdrant_api_key (str, optional): The api_key for the local or cloud qdrant cluster.
+            qdrant_collection_name (str, optional): The name for your qdrant collection. Required if type is "qdrant-semantic".
+            similarity_threshold (float, optional): The similarity threshold for semantic-caching, Required if type is "redis-semantic" or "qdrant-semantic".
 
             supported_call_types (list, optional): List of call types to cache for. Defaults to cache == on for all call types.
             **kwargs: Additional keyword arguments for redis.Redis() cache
@@ -1747,7 +2210,12 @@ class Cache:
         """
         if type == "redis":
             self.cache: BaseCache = RedisCache(
-                host, port, password, redis_flush_size, **kwargs
+                host,
+                port,
+                password,
+                redis_flush_size,
+                startup_nodes=redis_startup_nodes,
+                **kwargs,
             )
         elif type == "redis-semantic":
             self.cache = RedisSemanticCache(
@@ -1758,6 +2226,15 @@ class Cache:
                 use_async=redis_semantic_cache_use_async,
                 embedding_model=redis_semantic_cache_embedding_model,
                 **kwargs,
+            )
+        elif type == "qdrant-semantic":
+            self.cache = QdrantSemanticCache(
+                qdrant_api_base=qdrant_api_base,
+                qdrant_api_key=qdrant_api_key,
+                collection_name=qdrant_collection_name,
+                similarity_threshold=similarity_threshold,
+                quantization_config=qdrant_quantization_config,
+                embedding_model=qdrant_semantic_cache_embedding_model,
             )
         elif type == "local":
             self.cache = InMemoryCache()
@@ -1800,6 +2277,7 @@ class Cache:
         self.namespace = namespace
         self.redis_flush_size = redis_flush_size
         self.ttl = ttl
+        self.mode: CacheMode = mode or CacheMode.default_on
 
         if self.type == "local" and default_in_memory_ttl is not None:
             self.ttl = default_in_memory_ttl
@@ -1812,7 +2290,7 @@ class Cache:
         if self.namespace is not None and isinstance(self.cache, RedisCache):
             self.cache.namespace = self.namespace
 
-    def get_cache_key(self, *args, **kwargs):
+    def get_cache_key(self, *args, **kwargs) -> str:
         """
         Get the cache key for the given arguments.
 
@@ -2006,6 +2484,8 @@ class Cache:
             The cached result if it exists, otherwise None.
         """
         try:  # never block execution
+            if self.should_use_cache(*args, **kwargs) is not True:
+                return
             messages = kwargs.get("messages", [])
             if "cache_key" in kwargs:
                 cache_key = kwargs["cache_key"]
@@ -2031,6 +2511,9 @@ class Cache:
         Used for embedding calls in async wrapper
         """
         try:  # never block execution
+            if self.should_use_cache(*args, **kwargs) is not True:
+                return
+
             messages = kwargs.get("messages", [])
             if "cache_key" in kwargs:
                 cache_key = kwargs["cache_key"]
@@ -2068,10 +2551,9 @@ class Cache:
                 if self.ttl is not None:
                     kwargs["ttl"] = self.ttl
                 ## Get Cache-Controls ##
-                if kwargs.get("cache", None) is not None and isinstance(
-                    kwargs.get("cache"), dict
-                ):
-                    for k, v in kwargs.get("cache").items():
+                _cache_kwargs = kwargs.get("cache", None)
+                if isinstance(_cache_kwargs, dict):
+                    for k, v in _cache_kwargs.items():
                         if k == "ttl":
                             kwargs["ttl"] = v
 
@@ -2094,20 +2576,22 @@ class Cache:
             None
         """
         try:
+            if self.should_use_cache(*args, **kwargs) is not True:
+                return
             cache_key, cached_data, kwargs = self._add_cache_logic(
                 result=result, *args, **kwargs
             )
             self.cache.set_cache(cache_key, cached_data, **kwargs)
         except Exception as e:
-            verbose_logger.error(f"LiteLLM Cache: Excepton add_cache: {str(e)}")
-            verbose_logger.debug(traceback.format_exc())
-            pass
+            verbose_logger.exception(f"LiteLLM Cache: Excepton add_cache: {str(e)}")
 
     async def async_add_cache(self, result, *args, **kwargs):
         """
         Async implementation of add_cache
         """
         try:
+            if self.should_use_cache(*args, **kwargs) is not True:
+                return
             if self.type == "redis" and self.redis_flush_size is not None:
                 # high traffic - fill in results in memory and then flush
                 await self.batch_cache_write(result, *args, **kwargs)
@@ -2117,8 +2601,7 @@ class Cache:
                 )
                 await self.cache.async_set_cache(cache_key, cached_data, **kwargs)
         except Exception as e:
-            verbose_logger.error(f"LiteLLM Cache: Excepton add_cache: {str(e)}")
-            verbose_logger.debug(traceback.format_exc())
+            verbose_logger.exception(f"LiteLLM Cache: Excepton add_cache: {str(e)}")
 
     async def async_add_cache_pipeline(self, result, *args, **kwargs):
         """
@@ -2127,6 +2610,8 @@ class Cache:
         Does a bulk write, to prevent using too many clients
         """
         try:
+            if self.should_use_cache(*args, **kwargs) is not True:
+                return
             cache_list = []
             for idx, i in enumerate(kwargs["input"]):
                 preset_cache_key = self.get_cache_key(*args, **{**kwargs, "input": i})
@@ -2138,18 +2623,36 @@ class Cache:
                     **kwargs,
                 )
                 cache_list.append((cache_key, cached_data))
-            if hasattr(self.cache, "async_set_cache_pipeline"):
-                await self.cache.async_set_cache_pipeline(cache_list=cache_list)
+            async_set_cache_pipeline = getattr(
+                self.cache, "async_set_cache_pipeline", None
+            )
+            if async_set_cache_pipeline:
+                await async_set_cache_pipeline(cache_list=cache_list)
             else:
                 tasks = []
                 for val in cache_list:
-                    tasks.append(
-                        self.cache.async_set_cache(cache_key, cached_data, **kwargs)
-                    )
+                    tasks.append(self.cache.async_set_cache(val[0], val[1], **kwargs))
                 await asyncio.gather(*tasks)
         except Exception as e:
-            verbose_logger.error(f"LiteLLM Cache: Excepton add_cache: {str(e)}")
-            verbose_logger.debug(traceback.format_exc())
+            verbose_logger.exception(f"LiteLLM Cache: Excepton add_cache: {str(e)}")
+
+    def should_use_cache(self, *args, **kwargs):
+        """
+        Returns true if we should use the cache for LLM API calls
+
+        If cache is default_on then this is True
+        If cache is default_off then this is only true when user has opted in to use cache
+        """
+        if self.mode == CacheMode.default_on:
+            return True
+
+        # when mode == default_off -> Cache is opt in only
+        _cache = kwargs.get("cache", None)
+        verbose_logger.debug("should_use_cache: kwargs: %s; _cache: %s", kwargs, _cache)
+        if _cache and isinstance(_cache, dict):
+            if _cache.get("use-cache", False) is True:
+                return True
+        return False
 
     async def batch_cache_write(self, result, *args, **kwargs):
         cache_key, cached_data, kwargs = self._add_cache_logic(
@@ -2158,13 +2661,15 @@ class Cache:
         await self.cache.batch_cache_write(cache_key, cached_data, **kwargs)
 
     async def ping(self):
-        if hasattr(self.cache, "ping"):
-            return await self.cache.ping()
+        cache_ping = getattr(self.cache, "ping")
+        if cache_ping:
+            return await cache_ping()
         return None
 
     async def delete_cache_keys(self, keys):
-        if hasattr(self.cache, "delete_cache_keys"):
-            return await self.cache.delete_cache_keys(keys)
+        cache_delete_cache_keys = getattr(self.cache, "delete_cache_keys")
+        if cache_delete_cache_keys:
+            return await cache_delete_cache_keys(keys)
         return None
 
     async def disconnect(self):

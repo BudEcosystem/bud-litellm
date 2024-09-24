@@ -1,6 +1,6 @@
 import Image from '@theme/IdealImage';
 
-# 🔥 Arize AI - Logging LLM Input/Output
+# Arize AI
 
 AI Observability and Evaluation Platform
 
@@ -62,6 +62,7 @@ litellm_settings:
 environment_variables:
     ARIZE_SPACE_KEY: "d0*****"
     ARIZE_API_KEY: "141a****"
+    ARIZE_ENDPOINT: "https://otlp.arize.com/v1" # OPTIONAL - your custom arize api endpoint
 ```
 
 ## Support & Talk to Founders
