@@ -139,6 +139,7 @@ model LiteLLM_VerificationToken {
     permissions Json @default("{}")
     max_parallel_requests Int?
     metadata   Json  @default("{}")
+    blocked Boolean?
     tpm_limit     BigInt?
     rpm_limit     BigInt?
     max_budget Float?    
@@ -168,7 +169,7 @@ model LiteLLM_Config {
   param_value Json?
 }
 
-// View spend, model, hashed api_key per request
+// View spend, model, api_key per request
 model LiteLLM_SpendLogs {
   request_id          String @id
   call_type           String
@@ -192,6 +193,8 @@ model LiteLLM_SpendLogs {
   team_id             String? 
   end_user            String?
   requester_ip_address String?
+  @@index([startTime])
+  @@index([end_user])
 }
 
 // View spend, model, api_key per request
