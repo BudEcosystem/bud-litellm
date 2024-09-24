@@ -6,7 +6,7 @@ from typing import List, Optional, Any, Dict, Callable, Tuple
 import os
 import hashlib
 import cachetools
-from gptcache import Cache , Config
+from gptcache import Cache, Config
 from gptcache.manager import manager_factory
 from gptcache.manager.eviction.memory_cache import MemoryCacheEviction, popitem_wrapper
 from gptcache.adapter.api import init_similar_cache, get, put
@@ -18,29 +18,36 @@ from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 from .caching import BaseCache, print_verbose
 import uuid
 
-def_cache_config={
-        "embedding_model":os.getenv("CACHE_EMBEDDING_MODEL","sentence-transformers/all-MiniLM-L6-v2",),
-        "eviction_policy":{
-                            "policy":os.getenv("CACHE_EVICTION_POLICY","lru"),
-                            "max_size":int(os.getenv("CACHE_MAX_SIZE",1000)),
-                            "ttl":int(os.getenv("CACHE_TTL",3600)) if os.getenv("CACHE_TTL",3600) else None
-                        },
-        "score_threshold":float(os.getenv("CACHE_SCORE_THRESHOLD",0.6)),
-        "metric_config":{
-                        "endpoint_id":uuid.uuid4(),
-                        "project_id":uuid.uuid4(),
-                        "model_id":uuid.uuid4(),
-                        "api_endpoint":"https://api.example.com/endpoint",
-                        "metric_request_id":uuid.uuid4(),
-                        "engine":"openai",
-                        "request_start_time":time.time(),
-                        "cache_metrics_enabled" : True
-                    }
-    }
+def_cache_config = {
+    "embedding_model": os.getenv(
+        "CACHE_EMBEDDING_MODEL",
+        "sentence-transformers/all-MiniLM-L6-v2",
+    ),
+    "eviction_policy": {
+        "policy": os.getenv("CACHE_EVICTION_POLICY", "lru"),
+        "max_size": int(os.getenv("CACHE_MAX_SIZE", 1000)),
+        "ttl": (
+            int(os.getenv("CACHE_TTL", 3600)) if os.getenv("CACHE_TTL", 3600) else None
+        ),
+    },
+    "score_threshold": float(os.getenv("CACHE_SCORE_THRESHOLD", 0.6)),
+    "metric_config": {
+        "endpoint_id": uuid.uuid4(),
+        "project_id": uuid.uuid4(),
+        "model_id": uuid.uuid4(),
+        "api_endpoint": "https://api.example.com/endpoint",
+        "metric_request_id": uuid.uuid4(),
+        "engine": "openai",
+        "request_start_time": time.time(),
+        "cache_metrics_enabled": True,
+    },
+}
+
+
 class BudServeMemoryCacheEviction(MemoryCacheEviction):
-    """ This class `BudServeMemoryCacheEviction` is a subclass of `MemoryCacheEviction`
+    """This class `BudServeMemoryCacheEviction` is a subclass of `MemoryCacheEviction`
     that implements memory cache eviction policies such as LRU and TTL with customizable
-    parameters. """
+    parameters."""
 
     def __init__(
         self,
@@ -61,11 +68,23 @@ class BudServeMemoryCacheEviction(MemoryCacheEviction):
                 self._cache = cachetools.TTLCache(maxsize=maxsize, ttl=ttl, **kwargs)
             else:
                 raise ValueError(f"Unknown policy {policy}")
-            self._cache.popitem = popitem_wrapper(self._cache.popitem, on_evict, clean_size)
+            self._cache.popitem = popitem_wrapper(
+                self._cache.popitem, on_evict, clean_size
+            )
 
-def init_gptcache_redis(cache_obj: Cache, hashed_llm: str, cache_config: dict, embedding_model: str, similarity_threshold: float, **redis_params):
+
+def init_gptcache_redis(
+    cache_obj: Cache,
+    hashed_llm: str,
+    cache_config: dict,
+    embedding_model: str,
+    similarity_threshold: float,
+    **redis_params,
+):
     """Initialise the GPT cache object."""
-    print_verbose(f"Initialise the GPT cache object: init_gptcache_redis.{cache_config}")
+    print_verbose(
+        f"Initialise the GPT cache object: init_gptcache_redis.{cache_config}"
+    )
     endpoint_id = cache_config.get("endpoint_id", "1234")
     embedding_model: str = cache_config.get("embedding_model", embedding_model)
     try:
@@ -78,9 +97,9 @@ def init_gptcache_redis(cache_obj: Cache, hashed_llm: str, cache_config: dict, e
         print_verbose(f"gptcache redis semantic-cache using Onnx embeddings")
         embeddings = Onnx()
     eviction_policy = cache_config.get("eviction_policy", {})
-    host=redis_params["host"]
-    port=redis_params["port"]
-    password=redis_params["password"]
+    host = redis_params["host"]
+    port = redis_params["port"]
+    password = redis_params["password"]
     data_manager = manager_factory(
         "redis,redis",
         scalar_params={
@@ -98,10 +117,10 @@ def init_gptcache_redis(cache_obj: Cache, hashed_llm: str, cache_config: dict, e
             "collection_name": f"index_{endpoint_id}_{hashed_llm}",
             "namespace": f"namespace_{endpoint_id}_{hashed_llm}",
         },
-        eviction_manager="no_op_eviction"
+        eviction_manager="no_op_eviction",
     )
 
-    eviction_params={
+    eviction_params = {
         "maxsize": eviction_policy.get("max_size", 100),
         "policy": eviction_policy.get("policy", "LRU"),
         "clean_size": int(eviction_policy.get("max_size", 100) * 0.2) or 1,
@@ -118,10 +137,13 @@ def init_gptcache_redis(cache_obj: Cache, hashed_llm: str, cache_config: dict, e
         data_manager=data_manager,
         evaluation=SbertCrossencoderEvaluation(),
         config=Config(
-            similarity_threshold=cache_config.get("score_threshold", similarity_threshold),
+            similarity_threshold=cache_config.get(
+                "score_threshold", similarity_threshold
+            ),
             auto_flush=1,
-        )
+        ),
     )
+
 
 class RedisGPTCache(BaseCache, GPTCache):
     def __init__(
@@ -135,9 +157,7 @@ class RedisGPTCache(BaseCache, GPTCache):
         embedding_model="sentence-transformers/all-MiniLM-L6-v2",
         **kwargs,
     ):
-        print_verbose(
-            "gptcache redis semantic-cache initializing..."
-        )
+        print_verbose("gptcache redis semantic-cache initializing...")
         self.similarity_threshold = similarity_threshold
         self.embedding_model = embedding_model
         if redis_url is None:
@@ -153,16 +173,13 @@ class RedisGPTCache(BaseCache, GPTCache):
                     raise Exception("Redis host, port, and password must be provided")
 
             redis_url = "redis://:" + password + "@" + host + ":" + port
+        self.redis_params = {"host": host, "port": port, "password": password}
+        GPTCache.__init__(self, init_gptcache_redis)
         print_verbose(f"gptcache redis semantic-cache redis_url: {redis_url}")
-        self.redis_params = {
-            "host": host,
-            "port": port,
-            "password": password
-        }
+        self.redis_params = {"host": host, "port": port, "password": password}
         GPTCache.__init__(self, init_gptcache_redis)
         if use_async == False:
             print_verbose("gptcache redis semantic-cache using sync redis client")
-       
 
     def _new_gptcache(self, llm_string: str, cache_config: dict) -> Any:
         """New gptcache object"""
@@ -170,7 +187,14 @@ class RedisGPTCache(BaseCache, GPTCache):
         if self.init_gptcache_func is not None:
             sig = inspect.signature(self.init_gptcache_func)
             if len(sig.parameters) == 6:
-                self.init_gptcache_func(_gptcache, llm_string, cache_config, self.embedding_model, self.similarity_threshold, **self.redis_params)
+                self.init_gptcache_func(
+                    _gptcache,
+                    llm_string,
+                    cache_config,
+                    self.embedding_model,
+                    self.similarity_threshold,
+                    **self.redis_params,
+                )
             elif len(sig.parameters) == 3:
                 self.init_gptcache_func(_gptcache, llm_string, cache_config)
             elif len(sig.parameters) == 2:
@@ -194,17 +218,17 @@ class RedisGPTCache(BaseCache, GPTCache):
     def set_cache(self, key: str, value: Any, **kwargs):
         """Set cache for the given key."""
         cache_config = kwargs.pop("cache_config", def_cache_config)
-        cache_config["metric_config"] = {"request_start_time" : time.time()}
+        cache_config["metric_config"] = {"request_start_time": time.time()}
         llm_cache = self._get_gptcache(key, cache_config)
         # get the prompt
         messages = kwargs["messages"]
         prompt = "".join(message["content"] for message in messages)
-        result=value if isinstance(value, str) else json.dumps(value),
+        result = (value if isinstance(value, str) else json.dumps(value),)
         cache_metric = put(
             prompt,
             result,
             cache_obj=llm_cache,
-            cache_metric_config=cache_config.get("metric_config", {})
+            cache_metric_config=cache_config.get("metric_config", {}),
         )
 
         return
@@ -234,8 +258,8 @@ class RedisGPTCache(BaseCache, GPTCache):
         from gptcache.adapter.api import get
 
         cache_config = kwargs.pop("cache_config", def_cache_config)
-        cache_config["metric_config"] = {"request_start_time" : time.time()}
-        
+        cache_config["metric_config"] = {"request_start_time": time.time()}
+
         llm_cache = self._get_gptcache(key, cache_config)
         # query
         # get the messages
@@ -245,14 +269,14 @@ class RedisGPTCache(BaseCache, GPTCache):
         results, cache_metric = get(
             prompt,
             cache_obj=llm_cache,
-            cache_metric_config=cache_config.get("metric_config", {})
+            cache_metric_config=cache_config.get("metric_config", {}),
         )
-                
+
         results = [json.loads(results)] if results is not None else None
 
         if results == None:
             return None
-        
+
         if isinstance(results, list):
             if len(results) == 0:
                 return None
@@ -264,12 +288,12 @@ class RedisGPTCache(BaseCache, GPTCache):
         """Asynchronous cache retrieval."""
         # Directly call get_cache asynchronously
         return self.get_cache(key, **kwargs)
-    
+
     async def async_set_cache(self, key: str, value: Any, **kwargs):
         """Asynchronous cache insertion."""
         # Directly call set_cache asynchronously
         return self.set_cache(key, value, **kwargs)
-    
+
     async def batch_cache_write(self, result: List[Tuple[str, Any]], *args, **kwargs):
         """Batch write results to cache."""
         for key, value in result:
@@ -277,4 +301,4 @@ class RedisGPTCache(BaseCache, GPTCache):
 
     async def disconnect(self):
         """Perform any necessary cleanup on disconnect."""
-        print_verbose("Disconnecting from cache system...")  
+        print_verbose("Disconnecting from cache system...")

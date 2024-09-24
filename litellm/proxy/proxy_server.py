@@ -113,7 +113,7 @@ from litellm import (
     RetrieveBatchRequest,
 )
 from litellm._logging import verbose_proxy_logger, verbose_router_logger
-from litellm.caching import DualCache, RedisCache, RedisGPTCache
+from litellm.caching import DualCache, RedisCache
 from litellm.exceptions import RejectedRequestError
 from litellm.integrations.SlackAlerting.slack_alerting import (
     SlackAlerting,
@@ -1556,7 +1556,9 @@ class ProxyConfig:
                     verbose_proxy_logger.debug("passed cache type=%s", cache_type)
 
                     if (
-                        cache_type == "redis" or cache_type == "redis-semantic" or cache_type == "gpt_cache_redis"
+                        cache_type == "redis"
+                        or cache_type == "redis-semantic"
+                        or cache_type == "gpt_cache_redis"
                     ) and len(cache_params.keys()) == 0:
                         cache_host = get_secret("REDIS_HOST", None)
                         cache_port = get_secret("REDIS_PORT", None)
@@ -1602,10 +1604,13 @@ class ProxyConfig:
                             reset_color_code,
                             cache_password,
                         )
-                    if cache_type == "redis-semantic" or cache_type == "gpt_cache_redis":
+                    if (
+                        cache_type == "redis-semantic"
+                        or cache_type == "gpt_cache_redis"
+                    ):
                         # by default this should always be async
                         cache_params.update({"redis_semantic_cache_use_async": True})
-                    
+
                     # users can pass os.environ/ variables on the proxy - we should read them from the env
                     for key, value in cache_params.items():
                         if type(value) is str and value.startswith("os.environ/"):
