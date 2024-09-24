@@ -160,6 +160,12 @@ class RedisGPTCache(BaseCache, GPTCache):
         }
         GPTCache.__init__(self, init_gptcache_redis)
         print_verbose(f"gptcache redis semantic-cache redis_url: {redis_url}")
+        self.redis_params = {
+            "host": host,
+            "port": port,
+            "password": password
+        }
+        GPTCache.__init__(self, init_gptcache_redis)
         if use_async == False:
             print_verbose("gptcache redis semantic-cache using sync redis client")
        
@@ -170,7 +176,7 @@ class RedisGPTCache(BaseCache, GPTCache):
         if self.init_gptcache_func is not None:
             sig = inspect.signature(self.init_gptcache_func)
             if len(sig.parameters) == 6:
-                self.init_gptcache_func(_gptcache, llm_string, cache_config, self.embedding_model, self.similarity_threshold,**self.redis_params)
+                self.init_gptcache_func(_gptcache, llm_string, cache_config, self.embedding_model, self.similarity_threshold, **self.redis_params)
             elif len(sig.parameters) == 3:
                 self.init_gptcache_func(_gptcache, llm_string, cache_config)
             elif len(sig.parameters) == 2:

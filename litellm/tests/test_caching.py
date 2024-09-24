@@ -733,150 +733,8 @@ def test_redis_cache_completion():
 
     assert response1.id == response2.id
     assert response1.created == response2.created
-    assert response1.choices[0].message.content == 'response2.choices[0].message.content'
-
-
-# test_redis_cache_completion()
-
-def test_redis_gpt_cache_completion():
-    litellm.set_verbose = True
-
-    random_number = random.randint(
-        1, 100000
-    )  # add a random number to ensure it's always adding / reading from cache
-    messages = [
-        {"role": "user", "content": f"write a one sentence poem about: {random_number}"}
-    ]
-    # import pdb; pdb.set_trace()
-    litellm.cache = Cache(
-        type="redis-gptcache",
-        host="localhost",
-        port=6379,
-        password="budpassword",
-        similarity_threshold=0.8,
-        eviction_params={
-        "maxsize": 1000,
-        "policy": "allkeys-lru",
-        "clean_size": 1,
-        "ttl": 3600
-    }
-    )
-    print("test2 for Redis Caching - non streaming")
-    response1 = completion(
-        model="gpt-3.5-turbo",
-        messages=messages,
-        caching=True,
-        max_tokens=20,
-    )
-    response2 = completion(
-        model="gpt-3.5-turbo", messages=messages, caching=True, max_tokens=20
-    )
-    response3 = completion(
-        model="gpt-3.5-turbo", messages=messages, caching=True, temperature=0.5
-    )
-    # response4 = completion(model="azure/chatgpt-v-2", messages=messages, caching=True)
-
-    print("\nresponse 1", response1)
-    print("\nresponse 2", response2)
-    print("\nresponse 3", response3)
-    # print("\nresponse 4", response4)
-    litellm.cache = None
-    litellm.success_callback = []
-    litellm._async_success_callback = []
-
-    """
-    1 & 2 should be exactly the same 
-    1 & 3 should be different, since input params are diff
-    1 & 4 should be diff, since models are diff
-    """
-    print(f"response1: {response1}")
-    print(f"response2: {response2}")
-    if (
-        response1["choices"][0]["message"]["content"]
-        != response2["choices"][0]["message"]["content"]
-    ):  # 1 and 2 should be the same
-        # 1&2 have the exact same input params. This MUST Be a CACHE HIT
-        pytest.fail(f"Error occurred:")
-    if (
-        response1["choices"][0]["message"]["content"]
-        == response3["choices"][0]["message"]["content"]
-    ):
-        # if input params like seed, max_tokens are diff it should NOT be a cache hit
-        print(f"response1: {response1}")
-        print(f"response3: {response3}")
-        pytest.fail(
-            f"Response 1 == response 3. Same model, diff params shoudl not cache Error occurred:"
-        )
-    # if (
-    #     response1["choices"][0]["message"]["content"]
-    #     == response4["choices"][0]["message"]["content"]
-    # ):
-    #     # if models are different, it should not return cached response
-    #     print(f"response1: {response1}")
-    #     print(f"response4: {response4}")
-    #     pytest.fail(f"Error occurred:")
-
-    assert response1.id == response2.id
-    assert response1.created == response2.created
     assert response1.choices[0].message.content == response2.choices[0].message.content
 
-def test_redis_gpt_cache_completion_stream():
-    try:
-        litellm.success_callback = []
-        litellm._async_success_callback = []
-        litellm.callbacks = []
-        litellm.set_verbose = True
-        random_number = random.randint(
-            1, 100000
-        )  # add a random number to ensure it's always adding / reading from cache
-        messages = [
-            {
-                "role": "user",
-                "content": f"write a one sentence poem about: {random_number}",
-            }
-        ]
-        litellm.cache = Cache(
-            type="redis-gptcache",
-        )
-        print("test for caching, streaming + completion")
-        response1 = completion(
-            model="gpt-3.5-turbo",
-            messages=messages,
-            max_tokens=5,
-            temperature=0.2,
-            stream=True,
-        )
-        response_1_id = ""
-        for chunk in response1:
-            print(chunk)
-            response_1_id = chunk.id
-        time.sleep(0.5)
-        response2 = completion(
-            model="gpt-3.5-turbo",
-            messages=messages,
-            max_tokens=5,
-            temperature=0.2,
-            stream=True,
-        )
-        response_2_id = ""
-        for chunk in response2:
-            print(chunk)
-            response_2_id = chunk.id
-        assert (
-            response_1_id == response_2_id
-        ), f"Response 1 != Response 2. Same params, Response 1{response_1_id} != Response 2{response_2_id}"
-        litellm.success_callback = []
-        litellm.cache = None
-        litellm.success_callback = []
-        litellm._async_success_callback = []
-    except Exception as e:
-        print(e)
-        litellm.success_callback = []
-        raise e
-    """
-
-    1 & 2 should be exactly the same 
-    """
 
 # test_redis_cache_completion()
 
@@ -1728,7 +1586,7 @@ def test_redis_semantic_cache_completion():
     print(f"response1: {response1}")
 
     random_number = random.randint(1, 100000)
-    
+
     response2 = completion(
         model="gpt-3.5-turbo",
         messages=[

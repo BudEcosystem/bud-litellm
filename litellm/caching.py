@@ -1669,14 +1669,13 @@ class DualCache(BaseCache):
         if self.redis_cache is not None:
             self.redis_cache.delete_cache(key)
 
-from .redis_gpt_cache import RedisGPTCache
 
 #### LiteLLM.Completion / Embedding Cache ####
 class Cache:
     def __init__(
         self,
         type: Optional[
-            Literal["local", "redis", "redis-semantic", "gpt_cache_redis", "s3", "disk"]
+            Literal["local", "redis", "redis-semantic", "s3", "disk", "gpt_cache_redis"]
         ] = "local",
         host: Optional[str] = None,
         port: Optional[str] = None,
@@ -1760,16 +1759,6 @@ class Cache:
                 embedding_model=redis_semantic_cache_embedding_model,
                 **kwargs,
             )
-        elif type == "gpt_cache_redis":
-            self.cache = RedisGPTCache(
-                host,
-                port,
-                password,
-                similarity_threshold=similarity_threshold,
-                use_async=redis_semantic_cache_use_async,
-                embedding_model=redis_semantic_cache_embedding_model,
-                **kwargs,
-            )
         elif type == "local":
             self.cache = InMemoryCache()
         elif type == "s3":
@@ -1789,6 +1778,17 @@ class Cache:
             )
         elif type == "disk":
             self.cache = DiskCache(disk_cache_dir=disk_cache_dir)
+        elif type == "gpt_cache_redis":
+            from .redis_gpt_cache import RedisGPTCache
+            self.cache = RedisGPTCache(
+                host,
+                port,
+                password,
+                similarity_threshold=similarity_threshold,
+                use_async=redis_semantic_cache_use_async,
+                embedding_model=redis_semantic_cache_embedding_model,
+                **kwargs,
+            )
         if "cache" not in litellm.input_callback:
             litellm.input_callback.append("cache")
         if "cache" not in litellm.success_callback:
