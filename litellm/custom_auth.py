@@ -1,17 +1,16 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+from fastapi import HTTPException, Request, status
 from pydantic import BaseModel
 
 import litellm
-from litellm.proxy._types import *
-from litellm.proxy.auth.auth_utils import (
-    get_request_route,
-    pre_db_read_auth_checks,
-)
 from litellm._logging import verbose_proxy_logger
+from litellm.proxy._types import *
+from litellm.proxy.auth.auth_utils import get_request_route, pre_db_read_auth_checks
 from litellm.proxy.common_utils.http_parsing_utils import _read_request_body
 
 
-async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth: 
+async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
     """
     Custom Auth dependency for User API Key Authentication
     We receive budserve ap key and check if it is valid
@@ -25,8 +24,14 @@ async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
     5. Check model budget
     """
     try:
-        from litellm.proxy.proxy_server import user_api_key_cache, master_key
-        
+        from litellm.proxy.proxy_server import (
+            master_key,
+            prisma_client,
+            user_api_key_cache,
+        )
+
+        api_key = f"sk-{api_key}"
+
         route: str = get_request_route(request=request)
         # get the request body
         request_data = await _read_request_body(request=request)
@@ -35,10 +40,16 @@ async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
             request=request,
             route=route,
         )
-        
+
         # look for info is user_api_key_auth cache
-        valid_token: Optional[UserAPIKeyAuth] = await user_api_key_cache.async_get_cache(
-            key=hash_token(api_key)
+        verbose_proxy_logger.debug(f"API key sent in request >>> {api_key}")
+        hashed_token = hash_token(api_key)
+        valid_token: Optional[UserAPIKeyAuth] = (
+            await user_api_key_cache.async_get_cache(key=hashed_token)
+        )
+
+        verbose_proxy_logger.debug(
+            f"Valid token from cache for key : {hashed_token} >>> {valid_token}"
         )
         # OR
         # valid_token: Optional[UserAPIKeyAuth] = user_api_key_cache.get_cache(  # type: ignore
@@ -46,17 +57,22 @@ async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
         # )
         if valid_token is None:
             # getting token details from authentication service
-            _valid_token = BaseModel(
-                api_key=api_key,
-                expires=(datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S"),
-                budget=100,
-                model_max_budget={},
-                model_spend={},
-                spend=50,
-            )
+            credential_dict = {
+                "key": api_key.removeprefix("sk-"),
+                "expiry": (datetime.now() + timedelta(days=1)).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
+                "max_budget": 0.005,
+                "model_budgets": {"gpt-4": 0.003, "gpt-3.5-turbo": 0.002},
+            }
             valid_token = UserAPIKeyAuth(
-                **_valid_token.model_dump(exclude_none=True)
+                api_key=f"sk-{credential_dict['key']}",
+                expires=credential_dict["expiry"],
+                max_budget=credential_dict["max_budget"],
+                model_max_budget=credential_dict["model_budgets"],
             )
+            verbose_proxy_logger.debug(f"Valid token from DB >>> {valid_token}")
+        verbose_proxy_logger.debug(f"Valid token spend >> {valid_token.spend}")
         if valid_token is not None:
             if valid_token.expires is not None:
                 current_time = datetime.now(timezone.utc)
@@ -106,6 +122,7 @@ async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
                             ]
                         },  # type: ignore
                     )
+                    verbose_proxy_logger.debug(f"model spends >> {model_spend}")
                     if (
                         len(model_spend) > 0
                         and max_budget_per_model.get(current_model, None) is not None
@@ -125,15 +142,19 @@ async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
                                 max_budget=current_model_budget,
                             )
             # Add hashed token to cache
+            verbose_proxy_logger.debug(
+                f"Valid token storing in cache for key : {valid_token.token}"
+            )
             await user_api_key_cache.async_set_cache(
-                key=api_key,
+                key=valid_token.token,
                 value=valid_token,
             )
+            return valid_token
         else:
             # No token was found when looking up in the DB
             raise Exception("Invalid proxy server token passed")
-        
-    except Exception as e: 
+
+    except Exception as e:
         if isinstance(e, litellm.BudgetExceededError):
             raise ProxyException(
                 message=e.message,
