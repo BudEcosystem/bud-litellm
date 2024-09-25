@@ -135,6 +135,7 @@ from litellm.proxy.auth.model_checks import (
     get_team_models,
 )
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.budserve_middleware import BudServeMiddleware
 
 ## Import All Misc routes here ##
 from litellm.proxy.caching_routes import router as caching_router
@@ -450,6 +451,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(BudServeMiddleware)
 
 
 from typing import Dict
