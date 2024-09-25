@@ -157,7 +157,7 @@ class RedisGPTCache(BaseCache, GPTCache):
         embedding_model="sentence-transformers/all-MiniLM-L6-v2",
         **kwargs,
     ):
-        print_verbose("gptcache redis semantic-cache initializing...")
+        print_verbose(f"gptcache redis semantic-cache initializing...{kwargs}")
         self.similarity_threshold = similarity_threshold
         self.embedding_model = embedding_model
         if redis_url is None:
@@ -176,8 +176,6 @@ class RedisGPTCache(BaseCache, GPTCache):
         self.redis_params = {"host": host, "port": port, "password": password}
         GPTCache.__init__(self, init_gptcache_redis)
         print_verbose(f"gptcache redis semantic-cache redis_url: {redis_url}")
-        self.redis_params = {"host": host, "port": port, "password": password}
-        GPTCache.__init__(self, init_gptcache_redis)
         if use_async == False:
             print_verbose("gptcache redis semantic-cache using sync redis client")
 
@@ -256,7 +254,7 @@ class RedisGPTCache(BaseCache, GPTCache):
         # send endpoint_cache_config in kwargs
         import time
         from gptcache.adapter.api import get
-
+        print_verbose(f"kwargs GET, {kwargs}")
         cache_config = kwargs.pop("cache_config", def_cache_config)
         cache_config["metric_config"] = {"request_start_time": time.time()}
 
@@ -271,7 +269,7 @@ class RedisGPTCache(BaseCache, GPTCache):
             cache_obj=llm_cache,
             cache_metric_config=cache_config.get("metric_config", {}),
         )
-
+        print_verbose(f"getting outside GET, results {results}")
         results = [json.loads(results)] if results is not None else None
 
         if results == None:
