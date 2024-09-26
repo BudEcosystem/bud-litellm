@@ -1,5 +1,8 @@
+import asyncio
+import os
 from datetime import datetime, timedelta, timezone
 
+import httpx
 from fastapi import HTTPException, Request, status
 from pydantic import BaseModel
 
@@ -8,6 +11,15 @@ from litellm._logging import verbose_proxy_logger
 from litellm.proxy._types import *
 from litellm.proxy.auth.auth_utils import get_request_route, pre_db_read_auth_checks
 from litellm.proxy.common_utils.http_parsing_utils import _read_request_body
+
+
+async def fetch_data(url: str):
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url)
+        return response
+
+
+budserve_app_baseurl = os.getenv("BUDSERVE_APP_BASEURL", "http://localhost:9000")
 
 
 async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
@@ -51,28 +63,30 @@ async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
             await user_api_key_cache.async_get_cache(key=hashed_token)
         )
 
-        verbose_proxy_logger.debug(
+        verbose_proxy_logger.info(
             f"Valid token from cache for key : {hashed_token} >>> {valid_token}"
         )
-        # OR
-        # valid_token: Optional[UserAPIKeyAuth] = user_api_key_cache.get_cache(  # type: ignore
-        #     key=api_key
-        # )
         if valid_token is None:
             # getting token details from authentication service
-            credential_dict = {
-                "key": api_key.removeprefix("sk-"),
-                "expiry": (datetime.now() + timedelta(days=1)).strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                ),
-                "max_budget": 1,
-                "model_budgets": {"gpt-4": 0.003, "gpt-3.5-turbo": 0.002},
-            }
+            url = f"{budserve_app_baseurl}/credentials/details/{api_key.removeprefix('sk-')}"
+            credential_details_response = await fetch_data(url)
+            if credential_details_response.status_code != 200:
+                # No token was found when looking up in the DB
+                raise Exception("Invalid api key passed")
+            credential_dict = credential_details_response.json()["result"]
+            # credential_dict = {
+            #     "key": api_key.removeprefix("sk-"),
+            #     "expiry": (datetime.now() + timedelta(days=1)).strftime(
+            #         "%Y-%m-%d %H:%M:%S"
+            #     ),
+            #     "max_budget": 1,
+            #     "model_budgets": {"gpt-4": 0.003, "gpt-3.5-turbo": 0.002},
+            # }
             valid_token = UserAPIKeyAuth(
                 api_key=f"sk-{credential_dict['key']}",
                 expires=credential_dict["expiry"],
                 max_budget=credential_dict["max_budget"],
-                model_max_budget=credential_dict["model_budgets"],
+                model_max_budget=credential_dict["model_budgets"] or {},
             )
             api_key_spend = await prisma_client.db.litellm_spendlogs.group_by(
                 by=["api_key"],
@@ -90,8 +104,16 @@ async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
                 and api_key_spend[0]["_sum"]["spend"]
             ):
                 valid_token.spend = api_key_spend[0]["_sum"]["spend"]
-            verbose_proxy_logger.debug(f"Valid token from DB >>> {valid_token}")
-        verbose_proxy_logger.debug(f"Valid token spend >> {valid_token.spend}")
+            # Add hashed token to cache
+            verbose_proxy_logger.info(
+                f"Valid token storing in cache for key : {valid_token.token}"
+            )
+            await user_api_key_cache.async_set_cache(
+                key=valid_token.token,
+                value=valid_token,
+            )
+            verbose_proxy_logger.info(f"Valid token from DB >>> {valid_token}")
+        verbose_proxy_logger.info(f"Valid token spend >> {valid_token.spend}")
         if valid_token is not None:
             if valid_token.expires is not None:
                 current_time = datetime.now(timezone.utc)
@@ -160,18 +182,10 @@ async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
                                 current_cost=current_model_spend,
                                 max_budget=current_model_budget,
                             )
-            # Add hashed token to cache
-            verbose_proxy_logger.debug(
-                f"Valid token storing in cache for key : {valid_token.token}"
-            )
-            await user_api_key_cache.async_set_cache(
-                key=valid_token.token,
-                value=valid_token,
-            )
             return valid_token
         else:
             # No token was found when looking up in the DB
-            raise Exception("Invalid proxy server token passed")
+            raise Exception("Invalid api key passed")
 
     except Exception as e:
         if isinstance(e, litellm.BudgetExceededError):
