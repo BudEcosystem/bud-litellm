@@ -207,6 +207,7 @@ class Router:
         router_general_settings: Optional[
             RouterGeneralSettings
         ] = RouterGeneralSettings(),
+        endpoint_cache_settings: Optional[dict] = None,
     ) -> None:
         """
         Initialize the Router class with the given parameters for caching, reliability, and routing strategy.
@@ -308,7 +309,13 @@ class Router:
             and redis_port is not None
             and redis_password is not None
         ):
-            cache_type = "redis"
+            cache_type = (
+                "redis"
+                if endpoint_cache_settings is None
+                else endpoint_cache_settings.get("cache_params", {}).get(
+                    "type", "redis"
+                )
+            )
 
             if redis_url is not None:
                 cache_config["url"] = redis_url
@@ -327,9 +334,16 @@ class Router:
             redis_cache = RedisCache(**cache_config)
 
         if cache_responses:
-            if litellm.cache is None:
+            if litellm.cache is None and endpoint_cache_settings is not None:
                 # the cache can be initialized on the proxy server. We should not overwrite it
-                litellm.cache = litellm.Cache(type=cache_type, **cache_config)  # type: ignore
+                # user_config : enabled cache
+                enable_cache = endpoint_cache_settings.get("cache", False)
+                if enable_cache:
+                    endpoint_cache_config = endpoint_cache_settings.get(
+                        "cache_params", {}
+                    )
+                    if endpoint_cache_config:
+                        litellm.cache = litellm.Cache(type=cache_type, **endpoint_cache_config)  # type: ignore
             self.cache_responses = cache_responses
         self.cache = DualCache(
             redis_cache=redis_cache, in_memory_cache=InMemoryCache()

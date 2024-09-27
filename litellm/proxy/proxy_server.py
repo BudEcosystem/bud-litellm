@@ -135,6 +135,7 @@ from litellm.proxy.auth.model_checks import (
     get_team_models,
 )
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.budserve_middleware import BudServeMiddleware
 
 ## Import All Misc routes here ##
 from litellm.proxy.caching_routes import router as caching_router
@@ -450,6 +451,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(BudServeMiddleware)
 
 
 from typing import Dict
@@ -1565,7 +1567,9 @@ class ProxyConfig:
                     verbose_proxy_logger.debug("passed cache type=%s", cache_type)
 
                     if (
-                        cache_type == "redis" or cache_type == "redis-semantic"
+                        cache_type == "redis"
+                        or cache_type == "redis-semantic"
+                        or cache_type == "gpt_cache_redis"
                     ) and len(cache_params.keys()) == 0:
                         cache_host = get_secret("REDIS_HOST", None)
                         cache_port = get_secret("REDIS_PORT", None)
@@ -1611,7 +1615,10 @@ class ProxyConfig:
                             reset_color_code,
                             cache_password,
                         )
-                    if cache_type == "redis-semantic":
+                    if (
+                        cache_type == "redis-semantic"
+                        or cache_type == "gpt_cache_redis"
+                    ):
                         # by default this should always be async
                         cache_params.update({"redis_semantic_cache_use_async": True})
 
