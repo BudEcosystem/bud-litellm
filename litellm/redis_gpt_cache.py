@@ -18,32 +18,6 @@ from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 from .caching import BaseCache, print_verbose
 import uuid
 
-def_cache_config = {
-    "embedding_model": os.getenv(
-        "CACHE_EMBEDDING_MODEL",
-        "sentence-transformers/all-MiniLM-L6-v2",
-    ),
-    "eviction_policy": {
-        "policy": os.getenv("CACHE_EVICTION_POLICY", "lru"),
-        "max_size": int(os.getenv("CACHE_MAX_SIZE", 1000)),
-        "ttl": (
-            int(os.getenv("CACHE_TTL", 3600)) if os.getenv("CACHE_TTL", 3600) else None
-        ),
-    },
-    "score_threshold": float(os.getenv("CACHE_SCORE_THRESHOLD", 0.6)),
-    "metric_config": {
-        "endpoint_id": uuid.uuid4(),
-        "project_id": uuid.uuid4(),
-        "model_id": uuid.uuid4(),
-        "api_endpoint": "https://api.example.com/endpoint",
-        "metric_request_id": uuid.uuid4(),
-        "engine": "openai",
-        "request_start_time": time.time(),
-        "cache_metrics_enabled": True,
-    },
-}
-
-
 class BudServeMemoryCacheEviction(MemoryCacheEviction):
     """This class `BudServeMemoryCacheEviction` is a subclass of `MemoryCacheEviction`
     that implements memory cache eviction policies such as LRU and TTL with customizable
@@ -157,7 +131,7 @@ class RedisGPTCache(BaseCache, GPTCache):
         embedding_model="sentence-transformers/all-MiniLM-L6-v2",
         **kwargs,
     ):
-        print_verbose(f"gptcache redis cache initializing...{kwargs}")
+        print_verbose(f"gpt cache redis initializing...{kwargs}")
         self.similarity_threshold = similarity_threshold
         self.embedding_model = embedding_model
         self.eviction_policy=kwargs.pop("eviction_policy",None)
@@ -232,12 +206,10 @@ class RedisGPTCache(BaseCache, GPTCache):
         _gptcache = self.gptcache_dict.get(llm_string, None)
         if not _gptcache:
             _gptcache = self._new_gptcache(llm_string, cache_config)
-            print_verbose("new gpt cache")
         return _gptcache
 
     def set_cache(self, key: str, value: Any, **kwargs):
         """Set cache for the given key."""
-        # import pdb; pdb.set_trace()
         cache_config = self.cache_config
         cache_config["metric_config"] = {"request_start_time": time.time()}
         llm_cache = self._get_gptcache(key, cache_config)
@@ -308,13 +280,11 @@ class RedisGPTCache(BaseCache, GPTCache):
     async def async_get_cache(self, key: str, **kwargs):
         """Asynchronous cache retrieval."""
         # Directly call get_cache asynchronously
-        import pdb; pdb.set_trace()
         return self.get_cache(key, **kwargs)
 
     async def async_set_cache(self, key: str, value: Any, **kwargs):
         """Asynchronous cache insertion."""
         # Directly call set_cache asynchronously
-        # import pdb; pdb.set_trace()
         return self.set_cache(key, value, **kwargs)
 
     async def batch_cache_write(self, result: List[Tuple[str, Any]], *args, **kwargs):
