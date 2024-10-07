@@ -297,7 +297,7 @@ class Router:
         )  # names of models under litellm_params. ex. azure/chatgpt-v-2
         self.deployment_latency_map = {}
         ### CACHING ###
-        cache_type: Literal["local", "redis", "redis-semantic", "s3", "disk"] = (
+        cache_type: Literal["local", "redis", "redis-semantic", "s3", "disk", "gpt_cache_redis"] = (
             "local"  # default to an in-memory cache
         )
         redis_cache = None
@@ -312,9 +312,7 @@ class Router:
             cache_type = (
                 "redis"
                 if endpoint_cache_settings is None
-                else endpoint_cache_settings.get("cache_params", {}).get(
-                    "type", "redis"
-                )
+                else endpoint_cache_settings.get("type", "redis")
             )
 
             if redis_url is not None:
