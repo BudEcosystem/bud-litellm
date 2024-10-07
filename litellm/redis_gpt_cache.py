@@ -18,32 +18,6 @@ from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 from .caching import BaseCache, print_verbose
 import uuid
 
-def_cache_config = {
-    "embedding_model": os.getenv(
-        "CACHE_EMBEDDING_MODEL",
-        "sentence-transformers/all-MiniLM-L6-v2",
-    ),
-    "eviction_policy": {
-        "policy": os.getenv("CACHE_EVICTION_POLICY", "lru"),
-        "max_size": int(os.getenv("CACHE_MAX_SIZE", 1000)),
-        "ttl": (
-            int(os.getenv("CACHE_TTL", 3600)) if os.getenv("CACHE_TTL", 3600) else None
-        ),
-    },
-    "score_threshold": float(os.getenv("CACHE_SCORE_THRESHOLD", 0.6)),
-    "metric_config": {
-        "endpoint_id": uuid.uuid4(),
-        "project_id": uuid.uuid4(),
-        "model_id": uuid.uuid4(),
-        "api_endpoint": "https://api.example.com/endpoint",
-        "metric_request_id": uuid.uuid4(),
-        "engine": "openai",
-        "request_start_time": time.time(),
-        "cache_metrics_enabled": True,
-    },
-}
-
-
 class BudServeMemoryCacheEviction(MemoryCacheEviction):
     """This class `BudServeMemoryCacheEviction` is a subclass of `MemoryCacheEviction`
     that implements memory cache eviction policies such as LRU and TTL with customizable
@@ -157,9 +131,11 @@ class RedisGPTCache(BaseCache, GPTCache):
         embedding_model="sentence-transformers/all-MiniLM-L6-v2",
         **kwargs,
     ):
-        print_verbose(f"gptcache redis semantic-cache initializing...{kwargs}")
+        print_verbose(f"gpt cache redis initializing...{kwargs}")
         self.similarity_threshold = similarity_threshold
         self.embedding_model = embedding_model
+        self.eviction_policy=kwargs.pop("eviction_policy",None)
+        self.cache_config=None
         if redis_url is None:
             # if no url passed, check if host, port and password are passed, if not raise an Exception
             if host is None or port is None or password is None:
@@ -178,6 +154,26 @@ class RedisGPTCache(BaseCache, GPTCache):
         print_verbose(f"gptcache redis semantic-cache redis_url: {redis_url}")
         if use_async == False:
             print_verbose("gptcache redis semantic-cache using sync redis client")
+
+    def _create_cache_config(self, **kwargs):
+        """ Generate cache config from request user_config """
+        cache_config = None
+        user_config = kwargs["proxy_server_request"]["body"].get("user_config")
+        endpoint_cache_settings = user_config.get("endpoint_cache_settings")
+        if user_config and endpoint_cache_settings:
+            cache_params = endpoint_cache_settings.get("cache_params", {})
+            cache_config = {
+                "embedding_model": cache_params.get(
+                    "redis_semantic_cache_embedding_model", self.embedding_model
+                ),
+                "eviction_policy": cache_params.get("eviction_policy", {}),
+                "score_threshold": cache_params.get(
+                    "similarity_threshold", self.similarity_threshold
+                ),
+                "metric_config": cache_params.get("metric_config", {}),
+            }
+        self.cache_config=cache_config
+        return cache_config
 
     def _new_gptcache(self, llm_string: str, cache_config: dict) -> Any:
         """New gptcache object"""
@@ -207,7 +203,6 @@ class RedisGPTCache(BaseCache, GPTCache):
 
     def _get_gptcache(self, llm_string: str, cache_config: dict) -> Any:
         """Get a cache object."""
-        # import pdb; pdb.set_trace()
         _gptcache = self.gptcache_dict.get(llm_string, None)
         if not _gptcache:
             _gptcache = self._new_gptcache(llm_string, cache_config)
@@ -215,7 +210,7 @@ class RedisGPTCache(BaseCache, GPTCache):
 
     def set_cache(self, key: str, value: Any, **kwargs):
         """Set cache for the given key."""
-        cache_config = kwargs.pop("cache_config", def_cache_config)
+        cache_config = self.cache_config
         cache_config["metric_config"] = {"request_start_time": time.time()}
         llm_cache = self._get_gptcache(key, cache_config)
         # get the prompt
@@ -255,7 +250,7 @@ class RedisGPTCache(BaseCache, GPTCache):
         import time
         from gptcache.adapter.api import get
         print_verbose(f"kwargs GET, {kwargs}")
-        cache_config = kwargs.pop("cache_config", def_cache_config)
+        cache_config = self._create_cache_config(**kwargs) or {}
         cache_config["metric_config"] = {"request_start_time": time.time()}
 
         llm_cache = self._get_gptcache(key, cache_config)
