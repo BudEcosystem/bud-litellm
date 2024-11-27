@@ -452,6 +452,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(BudServeMiddleware)
+@app.middleware("http")
+async def catch_exceptions_middleware(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as e:
+        # Convert to ProxyException if needed
+        if not isinstance(e, ProxyException):
+            e = ProxyException(
+                message=str(e),
+                type="middleware_error", 
+                param=None,
+                code=500
+            )
+        # Handle the same way as the exception handler
+        return JSONResponse(
+            status_code=int(e.code) if e.code else status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "error": {
+                    "message": e.message,
+                    "type": e.type,
+                    "param": e.param,
+                    "code": e.code
+                }
+            },
+            headers=e.headers
+        )
 
 
 from typing import Dict

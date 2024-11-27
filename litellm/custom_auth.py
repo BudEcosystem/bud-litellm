@@ -1,10 +1,8 @@
-import asyncio
 import os
 from datetime import datetime, timedelta, timezone
 
 import httpx
 from fastapi import HTTPException, Request, status
-from pydantic import BaseModel
 
 import litellm
 from litellm._logging import verbose_proxy_logger
@@ -37,7 +35,6 @@ async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
     """
     try:
         from litellm.proxy.proxy_server import (
-            master_key,
             prisma_client,
             user_api_key_cache,
         )
