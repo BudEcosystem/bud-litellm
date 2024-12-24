@@ -1,5 +1,5 @@
-# include:
-#   - ./docker-compose-redis.yaml
+include:
+  - ./docker-compose-redis.yaml
 
 services:
   bud-litellm-app:
@@ -25,6 +25,7 @@ services:
       - path: ../.env
         required: true
     depends_on:
+      - bud-litellm-redis
       - bud-litellm-placement
     network_mode: host
   bud-litellm-sidecar:
