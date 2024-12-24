@@ -25,6 +25,9 @@ from typing import (
     get_type_hints,
 )
 
+from budmicroframe.main import configure_app
+from litellm.commons.config import app_settings, secrets_settings
+
 if TYPE_CHECKING:
     from opentelemetry.trace import Span as _Span
 
@@ -373,6 +376,7 @@ app = FastAPI(
     root_path=server_root_path,  # check if user passed root path, FastAPI defaults this value to ""
 )
 
+app = configure_app(app_settings, secrets_settings)
 
 ### CUSTOM API DOCS [ENTERPRISE FEATURE] ###
 # Custom OpenAPI schema generator to include only selected routes

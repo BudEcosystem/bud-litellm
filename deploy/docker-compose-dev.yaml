@@ -1,0 +1,69 @@
+# include:
+#   - ./docker-compose-redis.yaml
+
+services:
+  bud-litellm-app:
+    image: bud-microframe/$APP_NAME:$NAMESPACE
+    profiles:
+      - app
+    container_name: bud-mf-$NAMESPACE-$APP_NAME
+    build:
+      context: ..
+      dockerfile: ./Dockerfile.bud
+    # command: [ "litellm", "--config", "/app/litellm_config.yaml", "--port", $APP_PORT ]
+    # command: sh -c "cd litellm/proxy && litellm --config /app/litellm_config.yaml --port $APP_PORT"
+    command: sh -c "tail -f /dev/null"
+    # command : sh -c "alembic -c ./budcluster/alembic.ini upgrade head && tail -f /dev/null" # && uvicorn $APP_NAME.main:app --host 0.0.0.0 --port $APP_PORT --reload"
+    # ports:
+    #   - "$DAPR_GRPC_PORT:$DAPR_GRPC_PORT" # Dapr instances communicate over gRPC so gRPC port needs to be exposed
+    #   - "$DAPR_HTTP_PORT:$DAPR_HTTP_PORT" # Expose Dapr HTTP port for service invocation
+    #   - "$APP_PORT:$APP_PORT" # Expose app port for debugging purposes
+    volumes:
+      - ../:/app/
+      - ../cache:/app/cache
+    env_file:
+      - path: ../.env
+        required: true
+    depends_on:
+      - bud-litellm-placement
+    network_mode: host
+  bud-litellm-sidecar:
+    container_name: bud-mf-$NAMESPACE-$APP_NAME-dapr
+    image: "daprio/daprd:edge"
+    command: [
+      "./daprd",
+      "--app-id", "$APP_NAME",
+      "--app-port", "$APP_PORT",
+      "--dapr-http-port", "$DAPR_HTTP_PORT",
+      "--dapr-grpc-port", "$DAPR_GRPC_PORT",
+      "--placement-host-address", "$DAPR_PLACEMENT_HOST:$DAPR_PLACEMENT_PORT", # Dapr's placement service can be reach via the docker DNS entry
+      "--metrics-port", "$DAPR_METRICS_PORT",
+      "--resources-path", "/components",
+      "--config", "/config/appconfig.yaml",
+      "--log-as-json"
+    ]
+    env_file:
+      - path: ../.env
+        required: true
+    volumes:
+      # - "../crypto-keys:/crypto-keys"
+      - "${DAPR_COMPONENTS:-../.dapr/components/}:/components" # Mount the components folder for the runtime to use. The mounted location must match the --resources-path argument.
+      - "${DAPR_APP_CONFIG:-../.dapr/appconfig-dev.yaml}:/config/appconfig.yaml" # Mount the config file for the runtime to use. The mounted location must match the --config argument.
+      - ./:/app/
+    network_mode: "host"
+    # ports:
+    #   - "$DAPR_GRPC_PORT:$DAPR_GRPC_PORT"
+    #   - "$DAPR_HTTP_PORT:$DAPR_HTTP_PORT"
+    # network_mode: "service:app"
+  bud-litellm-placement:
+    container_name: bud-mf-$NAMESPACE-$APP_NAME-placement
+    image: "daprio/placement:edge"
+    command: [ "./placement", "--port", "$DAPR_PLACEMENT_PORT" ]
+    ports:
+      - "$DAPR_PLACEMENT_PORT:$DAPR_PLACEMENT_PORT"
+    networks:
+      - bud-litellm-network
+networks:
+  bud-litellm-network:
+    name: bud-mf-$NAMESPACE-$APP_NAME
+    driver: bridge
