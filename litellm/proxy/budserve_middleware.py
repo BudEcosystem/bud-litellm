@@ -89,6 +89,11 @@ class BudServeMiddleware(BaseHTTPMiddleware):
         # get endpoint details to fill cache_params
         user_config = await self.fetch_user_config(api_key, endpoint_name)
         
+        request_data["metadata"] = {
+            "project_id": user_config.get("project_id"),
+            "project_name": user_config.get("project_name"),
+        }
+        
         # redis connection params we will set as kubernetes env variables
         # can be fetched using os.getenv
         request_data["user_config"] = {
