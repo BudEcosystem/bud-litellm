@@ -28,8 +28,8 @@ from litellm.__about__ import __version__
 class AppConfig(BaseAppConfig):
     name: str = __version__.split("@")[0]
     version: str = __version__.split("@")[-1]
-    description: str = ""
-    api_root: str = ""
+    description: str = Field("Bud-Litellm is a proxy server for LLM requests.", alias="DOCS_DESCRIPTION")
+    api_root: str = Field("", alias="SERVER_ROOT_PATH")
 
     # Base Directory
     base_dir: DirectoryPath = Path(__file__).parent.parent.parent.resolve()
@@ -58,6 +58,10 @@ class AppConfig(BaseAppConfig):
     cache_score_threshold: float = Field(0.8, alias="CACHE_SCORE_THRESHOLD")
     cache_embedding_model: str = Field("sentence-transformers/all-MiniLM-L6-v2", alias="CACHE_EMBEDDING_MODEL")
 
+    # Metrics App and Topic
+    budmetrics_app_name: str = Field("budMetrics", alias="BUDMETRICS_APP_NAME")
+    budmetrics_topic_name: str = Field("budMetricsMessages", alias="BUDMETRICS_TOPIC_NAME")
+    
 
 class SecretsConfig(BaseSecretsConfig):
     name: str = __version__.split("@")[0]
