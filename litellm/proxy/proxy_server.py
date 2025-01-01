@@ -367,14 +367,14 @@ _description = (
     else f"Proxy Server to call 100+ LLMs in the OpenAI format. {custom_swagger_message}\n\n{ui_message}"
 )
 
-app = FastAPI(
-    docs_url=_get_docs_url(),
-    redoc_url=_get_redoc_url(),
-    title=_title,
-    description=_description,
-    version=version,
-    root_path=server_root_path,  # check if user passed root path, FastAPI defaults this value to ""
-)
+# app = FastAPI(
+#     docs_url=_get_docs_url(),
+#     redoc_url=_get_redoc_url(),
+#     title=_title,
+#     description=_description,
+#     version=version,
+#     root_path=server_root_path,  # check if user passed root path, FastAPI defaults this value to ""
+# )
 
 app = configure_app(app_settings, secrets_settings)
 
