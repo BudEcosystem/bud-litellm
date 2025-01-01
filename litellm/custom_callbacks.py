@@ -4,6 +4,7 @@ from uuid import UUID
 
 from litellm.integrations.custom_logger import CustomLogger
 import litellm
+from litellm.commons.config import app_settings
 from litellm._logging import verbose_logger
 from budmicroframe.commons.schemas import CloudEventBase
 from budmicroframe.shared.dapr_service import DaprService
@@ -156,8 +157,8 @@ class MyCustomHandler(CustomLogger):
             model_id=model_info["id"],
             provider=model_info["metadata"]["provider"],
             modality=model_info["metadata"]["modality"],
-            request_arrival_time=kwargs.get("api_call_start_time", start_time),
-            request_forwarded_time=start_time,
+            request_arrival_time=start_time,
+            request_forwarded_time=kwargs.get("api_call_start_time", start_time),
             response_start_time=kwargs.get("completion_start_time", end_time),
             response_end_time=end_time,
             request_body=proxy_server_request.get("body", {}),
@@ -166,10 +167,6 @@ class MyCustomHandler(CustomLogger):
             is_cache_hit=is_cache_hit or False,
             is_success=True,
         )
-        metrics_data.model_name = model_info["metadata"]["name"]
-        metrics_data.input_tokens = usage.get("prompt_tokens", None)
-        metrics_data.output_tokens = usage.get("completion_tokens", None)
-        metrics_data.is_streaming = kwargs.get("stream", False)
         verbose_logger.info(f"\n\nMetrics Data: {metrics_data}\n\n")
         return metrics_data
 
@@ -179,11 +176,8 @@ class MyCustomHandler(CustomLogger):
         with DaprService() as dapr_service:
             dapr_service.publish_to_topic(
                 data=metrics_data.model_dump(mode="json"),
-                pubsub_name="pubsub-redis",
-                target_topic_name="budMetricsMessages",
-                target_name="budMetrics",
-                source_topic_name="budLitellmMessages",
-                source_name="budLitellm",
+                target_topic_name=app_settings.budmetrics_topic_name,
+                target_name=app_settings.budmetrics_app_name,
                 event_type="add_request_metrics",
             )
         return
@@ -208,11 +202,8 @@ class MyCustomHandler(CustomLogger):
             with DaprService() as dapr_service:
                 dapr_service.publish_to_topic(
                     data=metrics_data.model_dump(mode="json"),
-                    pubsub_name="pubsub-redis",
-                    target_topic_name="budMetricsMessages",
-                    target_name="budMetrics",
-                    source_topic_name="budLitellmMessages",
-                    source_name="budLitellm",
+                    target_topic_name=app_settings.budmetrics_topic_name,
+                    target_name=app_settings.budmetrics_app_name,
                     event_type="add_request_metrics",
                 )
         except Exception as e:
