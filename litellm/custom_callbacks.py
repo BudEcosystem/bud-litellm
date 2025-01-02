@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
+from urllib.parse import urlparse
 from uuid import UUID
 
 from litellm.integrations.custom_logger import CustomLogger
@@ -8,6 +9,18 @@ from litellm.commons.config import app_settings
 from litellm._logging import verbose_logger
 from budmicroframe.commons.schemas import CloudEventBase
 from budmicroframe.shared.dapr_service import DaprService
+
+# error in budserve_middleware.py
+# Scenario 1: if user sends wrong api key
+# Scenario 2: if user sends wrong model param
+
+# Keys i won't have:
+# project_id, project_name, endpoint_id, endpoint_name (what user has sent), endpoint_path,
+# model_id, provider, modality, model_name
+# Keys i can set:
+# request_arrival_time == request_forwarded_time == response_start_time == response_end_time
+# request_body, response_body, cost = 0, is_cache_hit = False, is_success = False, is_streaming = False
+
 
 
 class RequestMetrics(CloudEventBase):
@@ -30,13 +43,9 @@ class RequestMetrics(CloudEventBase):
     cost: Optional[float] = None
     is_cache_hit: bool
     is_success: bool
+    # model_name: str
+    # is_streaming: bool = False
 
-    _model_name: Optional[str] = None
-    _input_tokens: Optional[int] = None
-    _output_tokens: Optional[int] = None
-    _response_analysis: Optional[Dict[str, Any]] = None
-    _is_streaming: Optional[bool] = None
-    
     def validate_intervals(self) -> "RequestMetrics":
         if self.response_start_time > self.response_end_time:
             raise ValueError("Response start time cannot be after response end time.")
@@ -47,62 +56,7 @@ class RequestMetrics(CloudEventBase):
         if self.request_arrival_time > self.response_end_time:
             raise ValueError("Request arrival time cannot be after response end time.")
         return self
-
-    @property
-    def model_name(self) -> Optional[str]:
-        return self._model_name
-
-    @model_name.setter
-    def model_name(self, value: Optional[str]) -> None:
-        self._model_name = value
-
-    @property
-    def input_tokens(self) -> Optional[int]:
-        return self._input_tokens
-
-    @input_tokens.setter
-    def input_tokens(self, value: Optional[int]) -> None:
-        self._input_tokens = value
-        
-    @property
-    def output_tokens(self) -> Optional[int]:
-        return self._output_tokens
-
-    @output_tokens.setter
-    def output_tokens(self, value: Optional[int]) -> None:
-        self._output_tokens = value
-
-    @property
-    def response_analysis(self) -> Optional[Dict[str, Any]]:
-        return self._response_analysis
-
-    @response_analysis.setter
-    def response_analysis(self, value: Optional[Dict[str, Any]]) -> None:
-        self._response_analysis = value
-
-    @property
-    def is_streaming(self) -> Optional[bool]:
-        return self._is_streaming
-
-    @is_streaming.setter
-    def is_streaming(self, value: Optional[bool]) -> None:
-        self._is_streaming = value
-        
-    @property
-    def ttft(self) -> float:
-        if self.is_streaming and self.response_start_time > self.request_arrival_time:
-            return round((self.response_start_time - self.request_arrival_time).total_seconds(), 3)
-
-    @property
-    def latency(self) -> float:
-        if self.response_end_time > self.request_arrival_time:
-            return round((self.response_end_time - self.request_arrival_time).total_seconds(), 3)
-
-    @property
-    def throughput(self) -> Optional[float]:
-        if self.output_tokens is not None and self.latency is not None:
-            return round(self.output_tokens / self.latency, 3)
-       
+   
  
 class UpdateRequestMetrics(CloudEventBase):
     request_id: UUID
@@ -151,7 +105,8 @@ class MyCustomHandler(CustomLogger):
             }
         model_info = litellm_params.get("model_info", {})
         metadata = litellm_params.get("metadata", {})   # headers passed to LiteLLM proxy, can be found here
-
+        api_route = urlparse(metadata.get("endpoint", "")).path
+        
         # Calculate cost using  litellm.completion_cost()
         response_obj = response_obj or {}
         cost = litellm.completion_cost(completion_response=response_obj) if not failure else 0
@@ -166,7 +121,7 @@ class MyCustomHandler(CustomLogger):
             project_name=metadata.get("project_name", None),
             endpoint_id=model_info["metadata"]["endpoint_id"] if model_info else "",
             endpoint_name=model,
-            endpoint_path=litellm_params["api_base"] if litellm_params else None,
+            endpoint_path=f"{litellm_params['api_base']}/{api_route}" if litellm_params else api_route,
             model_id=model_info["id"] if model_info else "",
             provider=model_info["metadata"]["provider"] if model_info else "",
             modality=model_info["metadata"]["modality"] if model_info else "",

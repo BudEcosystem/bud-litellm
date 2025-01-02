@@ -474,9 +474,13 @@ app.add_middleware(
 app.add_middleware(BudServeMiddleware)
 @app.middleware("http")
 async def catch_exceptions_middleware(request: Request, call_next):
+    start_time = time.time()
     try:
         return await call_next(request)
     except Exception as e:
+        # Handle the same way as the exception handler
+        import traceback
+        from litellm.custom_callbacks import proxy_handler_instance
         # Convert to ProxyException if needed
         if not isinstance(e, ProxyException):
             e = ProxyException(
@@ -485,7 +489,23 @@ async def catch_exceptions_middleware(request: Request, call_next):
                 param=None,
                 code=500
             )
-        # Handle the same way as the exception handler
+        # TODO: send error to budmetrics
+        end_time = time.time()
+        request_body = await request.json()
+        kwargs = {
+            "model": request_body.get("model", None),
+            "cache_hit": False,
+            "exception": e,
+            "traceback_exception": traceback.format_exc(),
+            "litellm_params": {
+                "proxy_server_request": {"body": request_body},
+                "metadata": {
+                    "endpoint": request.url
+                }
+            },
+            "stream": request_body.get("stream", False),
+        }
+        await proxy_handler_instance.async_log_failure_event(kwargs, None, start_time, end_time)
         return JSONResponse(
             status_code=int(e.code) if e.code else status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={

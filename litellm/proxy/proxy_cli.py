@@ -631,6 +631,7 @@ def run_server(  # noqa: PLR0915
         ):
             try:
                 from litellm.secret_managers.main import get_secret
+                from litellm._logging import verbose_proxy_logger
 
                 if os.getenv("DATABASE_URL", None) is not None:
                     ### add connection pool + pool timeout args
@@ -651,10 +652,14 @@ def run_server(  # noqa: PLR0915
                     modified_url = append_query_params(database_url, params)
                     os.environ["DIRECT_URL"] = modified_url
                     ###
+                verbose_proxy_logger.info("Running prisma db push")
                 subprocess.run(["prisma"], capture_output=True)
+                verbose_proxy_logger.info("Prisma db push complete")
                 is_prisma_runnable = True
             except FileNotFoundError:
                 is_prisma_runnable = False
+            except Exception as e:
+                print(e)
 
             if is_prisma_runnable:
                 from litellm.proxy.db.check_migration import check_prisma_schema_diff
