@@ -83,6 +83,7 @@ class BudServeMiddleware(BaseHTTPMiddleware):
 
         # get the request body
         request_data = await _read_request_body(request=request)
+        request.state.original_body = json.dumps(request_data)
         api_key = await self.get_api_key(request)
         endpoint_name = request_data.get("model")
 

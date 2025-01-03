@@ -491,7 +491,11 @@ async def catch_exceptions_middleware(request: Request, call_next):
             )
         # TODO: send error to budmetrics
         end_time = time.time()
-        request_body = await request.json()
+        original_body = getattr(request.state, "original_body", None)
+        if original_body is not None:
+            request_body = json.loads(original_body)
+        else:
+            request_body = {}
         kwargs = {
             "model": request_body.get("model", None),
             "cache_hit": False,
