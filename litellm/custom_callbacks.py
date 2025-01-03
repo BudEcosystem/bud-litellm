@@ -1,7 +1,8 @@
+import copy
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 from urllib.parse import urlparse
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from litellm.integrations.custom_logger import CustomLogger
 import litellm
@@ -78,28 +79,33 @@ class MyCustomHandler(CustomLogger):
     def get_request_metrics(self, kwargs, response_obj, start_time, end_time, failure=False) -> RequestMetrics:
         # log: key, user, model, prompt, response, tokens, cost
         # Access kwargs passed to litellm.completion()
-        verbose_logger.info(f"\nresponse_obj : {response_obj}")
+        verbose_logger.info(f"\nkwargs : {kwargs}")
+        # verbose_logger.info(f"\nresponse_obj : {response_obj}")
 
         model = kwargs.get("model", None)
         is_cache_hit = kwargs.get("cache_hit")
-        response_body = kwargs.get("standard_logging_object", {}).get("response", {})
-        if failure:
-            response_body = {
-                "exception": str(kwargs.get("exception", None)),
-                "traceback": kwargs.get("traceback_exception", None) 
-            }
+        response_body = copy.deepcopy(kwargs.get("standard_logging_object", {}).get("response", {})) if not failure else {
+            "exception": str(kwargs.get("exception", None)),
+            "traceback": kwargs.get("traceback_exception", None) 
+        }
         # Access litellm_params passed to litellm.completion(), example access `metadata`
         litellm_params = kwargs.get("litellm_params", {})
         proxy_server_request = litellm_params.get("proxy_server_request", {})
+        if proxy_server_request and proxy_server_request.get("body"):
+            # To handle unserializable metadata in proxy_server_request and circular dependencies
+            proxy_server_request["body"].pop("metadata", None)
         if not proxy_server_request:
             proxy_server_request["body"] = {
                 "model": model,
                 "messages": kwargs.get("messages", []),
                 "stream": kwargs.get("stream", False)
             }
-        model_info = litellm_params.get("model_info", {})
-        metadata = litellm_params.get("metadata", {})   # headers passed to LiteLLM proxy, can be found here
-        api_route = urlparse(metadata.get("endpoint", "")).path
+        model_info = copy.deepcopy(litellm_params.get("model_info", {}))
+        metadata = litellm_params.get("metadata", {})
+        endpoint = metadata.get("endpoint", "")
+        api_route = urlparse(str(endpoint)).path
+        if litellm_params.get("api_base"):
+            api_route = f"{litellm_params['api_base']}{api_route}"
         
         # Calculate cost using  litellm.completion_cost()
         response_obj = response_obj or {}
@@ -110,12 +116,12 @@ class MyCustomHandler(CustomLogger):
             usage = dict(usage)
         
         metrics_data = RequestMetrics(
-            request_id=kwargs.get("litellm_call_id", None),
+            request_id=kwargs.get("litellm_call_id", uuid4()),
             project_id=metadata.get("project_id", None),
             project_name=metadata.get("project_name", None),
             endpoint_id=model_info["metadata"]["endpoint_id"] if model_info else None,
             endpoint_name=model,
-            endpoint_path=f"{litellm_params['api_base']}/{api_route}" if litellm_params else api_route,
+            endpoint_path=api_route,
             model_id=model_info["id"] if model_info else None,
             model_name=model_info["metadata"]["name"] if model_info else None,
             provider=model_info["metadata"]["provider"] if model_info else None,
@@ -131,15 +137,17 @@ class MyCustomHandler(CustomLogger):
             is_streaming=kwargs.get("stream", False),
             is_success=not failure,
         )
-        verbose_logger.info(f"\n\nMetrics Data: {metrics_data}\n\n")
+        # verbose_logger.info(f"\n\nMetrics Data: {metrics_data}\n\n")
         return metrics_data
 
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         verbose_logger.info("On Async Success!")
         metrics_data = self.get_request_metrics(kwargs, response_obj, start_time, end_time)
+        metrics_data_json = metrics_data.model_dump(mode="json")
+        verbose_logger.info(f"Metrics Data JSON: {metrics_data_json}")
         with DaprService() as dapr_service:
             dapr_service.publish_to_topic(
-                data=metrics_data.model_dump(mode="json"),
+                data=metrics_data_json,
                 target_topic_name=app_settings.budmetrics_topic_name,
                 target_name=app_settings.budmetrics_app_name,
                 event_type="add_request_metrics",
@@ -150,16 +158,20 @@ class MyCustomHandler(CustomLogger):
         try:
             verbose_logger.info("On Async Failure !")
             metrics_data = self.get_request_metrics(kwargs, response_obj, start_time, end_time, failure=True)
+            metrics_data_json = metrics_data.model_dump(mode="json")
+            verbose_logger.info(f"Metrics Data JSON: {metrics_data_json}")
             with DaprService() as dapr_service:
                 dapr_service.publish_to_topic(
-                    data=metrics_data.model_dump(mode="json"),
+                    data=metrics_data_json,
                     target_topic_name=app_settings.budmetrics_topic_name,
                     target_name=app_settings.budmetrics_app_name,
                     event_type="add_request_metrics",
                 )
         except Exception as e:
             # TODO: what metrics data to log here?
+            import traceback
             verbose_logger.info(f"Exception: {e}")
+            verbose_logger.info(f"Traceback: {traceback.format_exc()}")
 
 proxy_handler_instance = MyCustomHandler()
 
