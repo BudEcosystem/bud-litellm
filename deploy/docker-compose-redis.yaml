@@ -1,0 +1,28 @@
+services:
+  bud-litellm-redis:
+    container_name: bud-mf-$NAMESPACE-litellm-redis
+    image: redis:alpine
+    ports:
+      - "$REDIS_PORT:$REDIS_PORT"
+    command:
+      - /bin/sh
+      - -c
+      - redis-server --requirepass "${SECRETS_REDIS_PASSWORD:?REDIS_PASSWORD variable is not set}" --port ${REDIS_PORT}
+    sysctls:
+      net.core.somaxconn: 1024
+    healthcheck:
+      test: [ "CMD", "redis-cli", "--raw", "incr", "ping" ]
+    volumes:
+      - budlitellm_redis_data:/data
+    # networks:
+    #   - bud-microframe-nw
+    # network_mode: "host"
+    networks:
+      - bud-litellm-network
+
+volumes:
+  budlitellm_redis_data:
+networks:
+  bud-litellm-network:
+    name: bud-mf-$NAMESPACE-$APP_NAME
+    driver: bridge

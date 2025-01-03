@@ -25,6 +25,9 @@ from typing import (
     get_type_hints,
 )
 
+from budmicroframe.main import configure_app
+from litellm.commons.config import app_settings, secrets_settings
+
 if TYPE_CHECKING:
     from opentelemetry.trace import Span as _Span
 
@@ -364,15 +367,16 @@ _description = (
     else f"Proxy Server to call 100+ LLMs in the OpenAI format. {custom_swagger_message}\n\n{ui_message}"
 )
 
-app = FastAPI(
-    docs_url=_get_docs_url(),
-    redoc_url=_get_redoc_url(),
-    title=_title,
-    description=_description,
-    version=version,
-    root_path=server_root_path,  # check if user passed root path, FastAPI defaults this value to ""
-)
+# app = FastAPI(
+#     docs_url=_get_docs_url(),
+#     redoc_url=_get_redoc_url(),
+#     title=_title,
+#     description=_description,
+#     version=version,
+#     root_path=server_root_path,  # check if user passed root path, FastAPI defaults this value to ""
+# )
 
+app = configure_app(app_settings, secrets_settings)
 
 ### CUSTOM API DOCS [ENTERPRISE FEATURE] ###
 # Custom OpenAPI schema generator to include only selected routes
@@ -470,9 +474,13 @@ app.add_middleware(
 app.add_middleware(BudServeMiddleware)
 @app.middleware("http")
 async def catch_exceptions_middleware(request: Request, call_next):
+    start_time = time.time()
     try:
         return await call_next(request)
     except Exception as e:
+        # Handle the same way as the exception handler
+        import traceback
+        from litellm.custom_callbacks import proxy_handler_instance
         # Convert to ProxyException if needed
         if not isinstance(e, ProxyException):
             e = ProxyException(
@@ -481,7 +489,27 @@ async def catch_exceptions_middleware(request: Request, call_next):
                 param=None,
                 code=500
             )
-        # Handle the same way as the exception handler
+        # TODO: send error to budmetrics
+        end_time = time.time()
+        original_body = getattr(request.state, "original_body", None)
+        if original_body is not None:
+            request_body = json.loads(original_body)
+        else:
+            request_body = {}
+        kwargs = {
+            "model": request_body.get("model", None),
+            "cache_hit": False,
+            "exception": e,
+            "traceback_exception": traceback.format_exc(),
+            "litellm_params": {
+                "proxy_server_request": {"body": request_body},
+                "metadata": {
+                    "endpoint": request.url
+                }
+            },
+            "stream": request_body.get("stream", False),
+        }
+        await proxy_handler_instance.async_log_failure_event(kwargs, None, start_time, end_time)
         return JSONResponse(
             status_code=int(e.code) if e.code else status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={
