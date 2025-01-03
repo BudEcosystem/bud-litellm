@@ -26,14 +26,15 @@ from budmicroframe.shared.dapr_service import DaprService
 class RequestMetrics(CloudEventBase):
     request_id: UUID
     request_ip: Optional[str] = None
-    project_id: UUID
-    project_name: str
-    endpoint_id: UUID | str
-    endpoint_name: str
-    endpoint_path: str
-    model_id: UUID | str
-    provider: str
-    modality: str
+    project_id: Optional[UUID]
+    project_name: Optional[str]
+    endpoint_id: Optional[UUID]
+    endpoint_name: Optional[str]
+    endpoint_path: Optional[str]
+    model_id: Optional[UUID]
+    model_name: Optional[str]
+    provider: Optional[str]
+    modality: Optional[str]
     request_arrival_time: datetime
     request_forwarded_time: datetime
     response_start_time: datetime
@@ -42,9 +43,8 @@ class RequestMetrics(CloudEventBase):
     response_body: Union[Dict[str, Any], List[Dict[str, Any]]]
     cost: Optional[float] = None
     is_cache_hit: bool
+    is_streaming: bool = False
     is_success: bool
-    # model_name: str
-    # is_streaming: bool = False
 
     def validate_intervals(self) -> "RequestMetrics":
         if self.response_start_time > self.response_end_time:
@@ -57,12 +57,6 @@ class RequestMetrics(CloudEventBase):
             raise ValueError("Request arrival time cannot be after response end time.")
         return self
    
- 
-class UpdateRequestMetrics(CloudEventBase):
-    request_id: UUID
-    cost: Optional[float] = None
-
-
 # This file includes the custom callbacks for LiteLLM Proxy
 # Once defined, these can be passed in proxy_config.yaml
 class MyCustomHandler(CustomLogger):
@@ -119,12 +113,13 @@ class MyCustomHandler(CustomLogger):
             request_id=kwargs.get("litellm_call_id", None),
             project_id=metadata.get("project_id", None),
             project_name=metadata.get("project_name", None),
-            endpoint_id=model_info["metadata"]["endpoint_id"] if model_info else "",
+            endpoint_id=model_info["metadata"]["endpoint_id"] if model_info else None,
             endpoint_name=model,
             endpoint_path=f"{litellm_params['api_base']}/{api_route}" if litellm_params else api_route,
-            model_id=model_info["id"] if model_info else "",
-            provider=model_info["metadata"]["provider"] if model_info else "",
-            modality=model_info["metadata"]["modality"] if model_info else "",
+            model_id=model_info["id"] if model_info else None,
+            model_name=model_info["metadata"]["name"] if model_info else None,
+            provider=model_info["metadata"]["provider"] if model_info else None,
+            modality=model_info["metadata"]["modality"] if model_info else None,
             request_arrival_time=start_time,
             request_forwarded_time=kwargs.get("api_call_start_time") or start_time,
             response_start_time=kwargs.get("completion_start_time") or end_time,
@@ -133,9 +128,8 @@ class MyCustomHandler(CustomLogger):
             response_body=response_body,
             cost=cost,
             is_cache_hit=is_cache_hit or False,
+            is_streaming=kwargs.get("stream", False),
             is_success=not failure,
-            # model_name=model_info["metadata"]["name"] if model_info else "",
-            # is_streaming=kwargs.get("stream", False)
         )
         verbose_logger.info(f"\n\nMetrics Data: {metrics_data}\n\n")
         return metrics_data
