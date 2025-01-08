@@ -3003,7 +3003,11 @@ class Router:
             response = await response
         ## PROCESS RESPONSE HEADERS
         await self.set_response_headers(response=response, model_group=model_group)
-
+        verbose_router_logger.info(f"TYPE OF MAKE CALL RESPONSE : {type(response)}")
+        if hasattr(response, "model"):
+            response.model = model_group
+        if isinstance(response, dict):
+            response["model"] = model_group
         return response
 
     def _handle_mock_testing_rate_limit_error(
