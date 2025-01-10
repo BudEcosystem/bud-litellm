@@ -21,6 +21,13 @@ class BudServeMiddleware(BaseHTTPMiddleware):
 
     async def get_api_key(self, request):
         authorization_header = request.headers.get("Authorization")
+        if not authorization_header:
+            raise ProxyException(
+                message="Authorization header is missing",
+                type="unauthorized",
+                param="Authorization",
+                code=401
+            )
         api_key = authorization_header.split(" ")[1]
         return api_key
     
