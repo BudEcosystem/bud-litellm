@@ -1,5 +1,6 @@
 import copy
 from datetime import datetime
+from pydantic import BaseModel
 from typing import Any, Dict, List, Optional, Union
 from urllib.parse import urlparse
 from uuid import UUID, uuid4
@@ -58,6 +59,12 @@ class RequestMetrics(CloudEventBase):
             raise ValueError("Request arrival time cannot be after response end time.")
         return self
    
+class CredentialUpdatePayload(BaseModel):
+    hashed_key: str
+    last_used_at: datetime
+
+class CredentialUpdateRequest(CloudEventBase):
+    payload: CredentialUpdatePayload
 # This file includes the custom callbacks for LiteLLM Proxy
 # Once defined, these can be passed in proxy_config.yaml
 class MyCustomHandler(CustomLogger):
@@ -140,6 +147,17 @@ class MyCustomHandler(CustomLogger):
         # verbose_logger.info(f"\n\nMetrics Data: {metrics_data}\n\n")
         return metrics_data
 
+    def get_credential_update_request(self, kwargs, response_obj, start_time, end_time) -> CredentialUpdateRequest:
+        litellm_params = kwargs.get("litellm_params", {})
+        metadata = litellm_params.get("metadata", {})
+        api_key_hash = metadata.get("api_key_hash")
+        return CredentialUpdateRequest(
+            payload=CredentialUpdatePayload(
+                hashed_key=api_key_hash,
+                last_used_at=start_time
+            )
+        ) if api_key_hash else None
+
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         verbose_logger.info("On Async Success!")
         metrics_data = self.get_request_metrics(kwargs, response_obj, start_time, end_time)
@@ -152,6 +170,15 @@ class MyCustomHandler(CustomLogger):
                 target_name=app_settings.budmetrics_app_name,
                 event_type="add_request_metrics",
             )
+        credential_update_request = self.get_credential_update_request(kwargs, response_obj, start_time, end_time)
+        if credential_update_request:
+            with DaprService() as dapr_service:
+                dapr_service.publish_to_topic(
+                    data=credential_update_request.model_dump(mode="json"),
+                    target_topic_name=app_settings.budapp_topic_name,
+                    target_name=app_settings.budapp_app_name,
+                    event_type="credential_update",
+                )
         return
 
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time): 

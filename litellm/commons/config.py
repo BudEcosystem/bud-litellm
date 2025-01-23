@@ -62,6 +62,10 @@ class AppConfig(BaseAppConfig):
     budmetrics_app_name: str = Field("budMetrics", alias="BUDMETRICS_APP_NAME")
     budmetrics_topic_name: str = Field("budMetricsMessages", alias="BUDMETRICS_TOPIC_NAME")
     
+    # BudApp Credential Update
+    budapp_app_name: str = Field("budApp", alias="BUDAPP_APP_NAME")
+    budapp_topic_name: str = Field("budAppMessages", alias="BUDAPP_TOPIC_NAME")
+    
 
 class SecretsConfig(BaseSecretsConfig):
     name: str = __version__.split("@")[0]
