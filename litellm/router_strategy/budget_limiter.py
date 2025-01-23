@@ -20,34 +20,23 @@ anthropic:
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, TypedDict, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import litellm
 from litellm._logging import verbose_router_logger
 from litellm.caching.caching import DualCache
 from litellm.caching.redis_cache import RedisPipelineIncrementOperation
-from litellm.integrations.custom_logger import CustomLogger
-from litellm.litellm_core_utils.core_helpers import _get_parent_otel_span_from_kwargs
+from litellm.integrations.custom_logger import CustomLogger, Span
 from litellm.litellm_core_utils.duration_parser import duration_in_seconds
 from litellm.router_strategy.tag_based_routing import _get_tags_from_request_kwargs
 from litellm.router_utils.cooldown_callbacks import (
     _get_prometheus_logger_from_callbacks,
 )
-from litellm.types.router import (
-    DeploymentTypedDict,
-    GenericBudgetConfigType,
-    GenericBudgetInfo,
-    LiteLLM_Params,
-    RouterErrors,
-)
-from litellm.types.utils import BudgetConfig, StandardLoggingPayload
-
-if TYPE_CHECKING:
-    from opentelemetry.trace import Span as _Span
-
-    Span = _Span
-else:
-    Span = Any
+from litellm.types.llms.openai import AllMessageValues
+from litellm.types.router import DeploymentTypedDict, LiteLLM_Params, RouterErrors
+from litellm.types.utils import BudgetConfig
+from litellm.types.utils import BudgetConfig as GenericBudgetInfo
+from litellm.types.utils import GenericBudgetConfigType, StandardLoggingPayload
 
 DEFAULT_REDIS_SYNC_INTERVAL = 1
 
@@ -55,13 +44,13 @@ DEFAULT_REDIS_SYNC_INTERVAL = 1
 class RouterBudgetLimiting(CustomLogger):
     def __init__(
         self,
-        router_cache: DualCache,
+        dual_cache: DualCache,
         provider_budget_config: Optional[dict],
         model_list: Optional[
             Union[List[DeploymentTypedDict], List[Dict[str, Any]]]
         ] = None,
     ):
-        self.router_cache = router_cache
+        self.dual_cache = dual_cache
         self.redis_increment_operation_queue: List[RedisPipelineIncrementOperation] = []
         asyncio.create_task(self.periodic_sync_in_memory_spend_with_redis())
         self.provider_budget_config: Optional[GenericBudgetConfigType] = (
@@ -79,9 +68,12 @@ class RouterBudgetLimiting(CustomLogger):
 
     async def async_filter_deployments(
         self,
-        healthy_deployments: Union[List[Dict[str, Any]], Dict[str, Any]],
-        request_kwargs: Optional[Dict] = None,
-    ):
+        model: str,
+        healthy_deployments: List,
+        messages: Optional[List[AllMessageValues]],
+        request_kwargs: Optional[dict] = None,
+        parent_otel_span: Optional[Span] = None,  # type: ignore
+    ) -> List[dict]:
         """
         Filter out deployments that have exceeded their provider budget limit.
 
@@ -102,11 +94,6 @@ class RouterBudgetLimiting(CustomLogger):
 
         potential_deployments: List[Dict] = []
 
-        # Extract the parent OpenTelemetry span for tracing
-        parent_otel_span: Optional[Span] = _get_parent_otel_span_from_kwargs(
-            request_kwargs
-        )
-
         cache_keys, provider_configs, deployment_configs = (
             await self._async_get_cache_keys_for_router_budget_limiting(
                 healthy_deployments=healthy_deployments,
@@ -116,7 +103,7 @@ class RouterBudgetLimiting(CustomLogger):
 
         # Single cache read for all spend values
         if len(cache_keys) > 0:
-            _current_spends = await self.router_cache.async_batch_get_cache(
+            _current_spends = await self.dual_cache.async_batch_get_cache(
                 keys=cache_keys,
                 parent_otel_span=parent_otel_span,
             )
@@ -179,17 +166,19 @@ class RouterBudgetLimiting(CustomLogger):
                 provider = self._get_llm_provider_for_deployment(deployment)
                 if provider in provider_configs:
                     config = provider_configs[provider]
+                    if config.max_budget is None:
+                        continue
                     current_spend = spend_map.get(
-                        f"provider_spend:{provider}:{config.time_period}", 0.0
+                        f"provider_spend:{provider}:{config.budget_duration}", 0.0
                     )
                     self._track_provider_remaining_budget_prometheus(
                         provider=provider,
                         spend=current_spend,
-                        budget_limit=config.budget_limit,
+                        budget_limit=config.max_budget,
                     )
 
-                    if current_spend >= config.budget_limit:
-                        debug_msg = f"Exceeded budget for provider {provider}: {current_spend} >= {config.budget_limit}"
+                    if config.max_budget and current_spend >= config.max_budget:
+                        debug_msg = f"Exceeded budget for provider {provider}: {current_spend} >= {config.max_budget}"
                         deployment_above_budget_info += f"{debug_msg}\n"
                         is_within_budget = False
                         continue
@@ -203,30 +192,32 @@ class RouterBudgetLimiting(CustomLogger):
                 if model_id in deployment_configs:
                     config = deployment_configs[model_id]
                     current_spend = spend_map.get(
-                        f"deployment_spend:{model_id}:{config.time_period}", 0.0
+                        f"deployment_spend:{model_id}:{config.budget_duration}", 0.0
                     )
-                    if current_spend >= config.budget_limit:
-                        debug_msg = f"Exceeded budget for deployment model_name: {_model_name}, litellm_params.model: {_litellm_model_name}, model_id: {model_id}: {current_spend} >= {config.budget_limit}"
+                    if config.max_budget and current_spend >= config.max_budget:
+                        debug_msg = f"Exceeded budget for deployment model_name: {_model_name}, litellm_params.model: {_litellm_model_name}, model_id: {model_id}: {current_spend} >= {config.budget_duration}"
                         verbose_router_logger.debug(debug_msg)
                         deployment_above_budget_info += f"{debug_msg}\n"
                         is_within_budget = False
                         continue
-
             # Check tag budget
             if self.tag_budget_config and is_within_budget:
                 for _tag in request_tags:
                     _tag_budget_config = self._get_budget_config_for_tag(_tag)
                     if _tag_budget_config:
                         _tag_spend = spend_map.get(
-                            f"tag_spend:{_tag}:{_tag_budget_config.time_period}", 0.0
+                            f"tag_spend:{_tag}:{_tag_budget_config.budget_duration}",
+                            0.0,
                         )
-                        if _tag_spend >= _tag_budget_config.budget_limit:
-                            debug_msg = f"Exceeded budget for tag='{_tag}', tag_spend={_tag_spend}, tag_budget_limit={_tag_budget_config.budget_limit}"
+                        if (
+                            _tag_budget_config.max_budget
+                            and _tag_spend >= _tag_budget_config.max_budget
+                        ):
+                            debug_msg = f"Exceeded budget for tag='{_tag}', tag_spend={_tag_spend}, tag_budget_limit={_tag_budget_config.max_budget}"
                             verbose_router_logger.debug(debug_msg)
                             deployment_above_budget_info += f"{debug_msg}\n"
                             is_within_budget = False
                             continue
-
             if is_within_budget:
                 potential_deployments.append(deployment)
 
@@ -256,10 +247,13 @@ class RouterBudgetLimiting(CustomLogger):
                 provider = self._get_llm_provider_for_deployment(deployment)
                 if provider is not None:
                     budget_config = self._get_budget_config_for_provider(provider)
-                    if budget_config is not None:
+                    if (
+                        budget_config is not None
+                        and budget_config.budget_duration is not None
+                    ):
                         provider_configs[provider] = budget_config
                         cache_keys.append(
-                            f"provider_spend:{provider}:{budget_config.time_period}"
+                            f"provider_spend:{provider}:{budget_config.budget_duration}"
                         )
 
             # Check deployment budgets
@@ -270,7 +264,7 @@ class RouterBudgetLimiting(CustomLogger):
                     if budget_config is not None:
                         deployment_configs[model_id] = budget_config
                         cache_keys.append(
-                            f"deployment_spend:{model_id}:{budget_config.time_period}"
+                            f"deployment_spend:{model_id}:{budget_config.budget_duration}"
                         )
             # Check tag budgets
             if self.tag_budget_config:
@@ -281,7 +275,7 @@ class RouterBudgetLimiting(CustomLogger):
                     _tag_budget_config = self._get_budget_config_for_tag(_tag)
                     if _tag_budget_config:
                         cache_keys.append(
-                            f"tag_spend:{_tag}:{_tag_budget_config.time_period}"
+                            f"tag_spend:{_tag}:{_tag_budget_config.budget_duration}"
                         )
         return cache_keys, provider_configs, deployment_configs
 
@@ -294,9 +288,9 @@ class RouterBudgetLimiting(CustomLogger):
         If it does, return the value.
         If it does not, set the key to `current_time` and return the value.
         """
-        budget_start = await self.router_cache.async_get_cache(start_time_key)
+        budget_start = await self.dual_cache.async_get_cache(start_time_key)
         if budget_start is None:
-            await self.router_cache.async_set_cache(
+            await self.dual_cache.async_set_cache(
                 key=start_time_key, value=current_time, ttl=ttl_seconds
             )
             return current_time
@@ -322,10 +316,10 @@ class RouterBudgetLimiting(CustomLogger):
         - stores key: `provider_budget_start_time:{provider}`, value: current_time.
             This stores the start time of the new budget window
         """
-        await self.router_cache.async_set_cache(
+        await self.dual_cache.async_set_cache(
             key=spend_key, value=response_cost, ttl=ttl_seconds
         )
-        await self.router_cache.async_set_cache(
+        await self.dual_cache.async_set_cache(
             key=start_time_key, value=current_time, ttl=ttl_seconds
         )
         return current_time
@@ -341,7 +335,7 @@ class RouterBudgetLimiting(CustomLogger):
         - Increments the spend in memory cache (so spend instantly updated in memory)
         - Queues the increment operation to Redis Pipeline (using batched pipeline to optimize performance. Using Redis for multi instance environment of LiteLLM)
         """
-        await self.router_cache.in_memory_cache.async_increment(
+        await self.dual_cache.in_memory_cache.async_increment(
             key=spend_key,
             value=response_cost,
             ttl=ttl,
@@ -374,7 +368,7 @@ class RouterBudgetLimiting(CustomLogger):
         if budget_config:
             # increment spend for provider
             spend_key = (
-                f"provider_spend:{custom_llm_provider}:{budget_config.time_period}"
+                f"provider_spend:{custom_llm_provider}:{budget_config.budget_duration}"
             )
             start_time_key = f"provider_budget_start_time:{custom_llm_provider}"
             await self._increment_spend_for_key(
@@ -387,9 +381,7 @@ class RouterBudgetLimiting(CustomLogger):
         deployment_budget_config = self._get_budget_config_for_deployment(model_id)
         if deployment_budget_config:
             # increment spend for specific deployment id
-            deployment_spend_key = (
-                f"deployment_spend:{model_id}:{deployment_budget_config.time_period}"
-            )
+            deployment_spend_key = f"deployment_spend:{model_id}:{deployment_budget_config.budget_duration}"
             deployment_start_time_key = f"deployment_budget_start_time:{model_id}"
             await self._increment_spend_for_key(
                 budget_config=deployment_budget_config,
@@ -404,7 +396,7 @@ class RouterBudgetLimiting(CustomLogger):
                 _tag_budget_config = self._get_budget_config_for_tag(_tag)
                 if _tag_budget_config:
                     _tag_spend_key = (
-                        f"tag_spend:{_tag}:{_tag_budget_config.time_period}"
+                        f"tag_spend:{_tag}:{_tag_budget_config.budget_duration}"
                     )
                     _tag_start_time_key = f"tag_budget_start_time:{_tag}"
                     await self._increment_spend_for_key(
@@ -421,8 +413,11 @@ class RouterBudgetLimiting(CustomLogger):
         start_time_key: str,
         response_cost: float,
     ):
+        if budget_config.budget_duration is None:
+            return
+
         current_time = datetime.now(timezone.utc).timestamp()
-        ttl_seconds = duration_in_seconds(budget_config.time_period)
+        ttl_seconds = duration_in_seconds(budget_config.budget_duration)
 
         budget_start = await self._get_or_set_budget_start_time(
             start_time_key=start_time_key,
@@ -489,7 +484,7 @@ class RouterBudgetLimiting(CustomLogger):
         Only runs if Redis is initialized
         """
         try:
-            if not self.router_cache.redis_cache:
+            if not self.dual_cache.redis_cache:
                 return  # Redis is not initialized
 
             verbose_router_logger.debug(
@@ -498,7 +493,7 @@ class RouterBudgetLimiting(CustomLogger):
             )
             if len(self.redis_increment_operation_queue) > 0:
                 asyncio.create_task(
-                    self.router_cache.redis_cache.async_increment_pipeline(
+                    self.dual_cache.redis_cache.async_increment_pipeline(
                         increment_list=self.redis_increment_operation_queue,
                     )
                 )
@@ -525,7 +520,7 @@ class RouterBudgetLimiting(CustomLogger):
 
         try:
             # No need to sync if Redis cache is not initialized
-            if self.router_cache.redis_cache is None:
+            if self.dual_cache.redis_cache is None:
                 return
 
             # 1. Push all provider spend increments to Redis
@@ -538,24 +533,26 @@ class RouterBudgetLimiting(CustomLogger):
                 for provider, config in self.provider_budget_config.items():
                     if config is None:
                         continue
-                    cache_keys.append(f"provider_spend:{provider}:{config.time_period}")
+                    cache_keys.append(
+                        f"provider_spend:{provider}:{config.budget_duration}"
+                    )
 
             if self.deployment_budget_config is not None:
                 for model_id, config in self.deployment_budget_config.items():
                     if config is None:
                         continue
                     cache_keys.append(
-                        f"deployment_spend:{model_id}:{config.time_period}"
+                        f"deployment_spend:{model_id}:{config.budget_duration}"
                     )
 
             if self.tag_budget_config is not None:
                 for tag, config in self.tag_budget_config.items():
                     if config is None:
                         continue
-                    cache_keys.append(f"tag_spend:{tag}:{config.time_period}")
+                    cache_keys.append(f"tag_spend:{tag}:{config.budget_duration}")
 
             # Batch fetch current spend values from Redis
-            redis_values = await self.router_cache.redis_cache.async_batch_get_cache(
+            redis_values = await self.dual_cache.redis_cache.async_batch_get_cache(
                 key_list=cache_keys
             )
 
@@ -563,7 +560,7 @@ class RouterBudgetLimiting(CustomLogger):
             if isinstance(redis_values, dict):  # Check if redis_values is a dictionary
                 for key, value in redis_values.items():
                     if value is not None:
-                        await self.router_cache.in_memory_cache.async_set_cache(
+                        await self.dual_cache.in_memory_cache.async_set_cache(
                             key=key, value=float(value)
                         )
                         verbose_router_logger.debug(
@@ -619,7 +616,6 @@ class RouterBudgetLimiting(CustomLogger):
 
         This is helpful for debugging and monitoring provider budget limits.
         """
-        from litellm.integrations.prometheus import PrometheusLogger
 
         prometheus_logger = _get_prometheus_logger_from_callbacks()
         if prometheus_logger:
@@ -645,16 +641,14 @@ class RouterBudgetLimiting(CustomLogger):
         if budget_config is None:
             return None
 
-        spend_key = f"provider_spend:{provider}:{budget_config.time_period}"
+        spend_key = f"provider_spend:{provider}:{budget_config.budget_duration}"
 
-        if self.router_cache.redis_cache:
+        if self.dual_cache.redis_cache:
             # use Redis as source of truth since that has spend across all instances
-            current_spend = await self.router_cache.redis_cache.async_get_cache(
-                spend_key
-            )
+            current_spend = await self.dual_cache.redis_cache.async_get_cache(spend_key)
         else:
             # use in-memory cache if Redis is not initialized
-            current_spend = await self.router_cache.async_get_cache(spend_key)
+            current_spend = await self.dual_cache.async_get_cache(spend_key)
         return float(current_spend) if current_spend is not None else 0.0
 
     async def _get_current_provider_budget_reset_at(
@@ -664,11 +658,11 @@ class RouterBudgetLimiting(CustomLogger):
         if budget_config is None:
             return None
 
-        spend_key = f"provider_spend:{provider}:{budget_config.time_period}"
-        if self.router_cache.redis_cache:
-            ttl_seconds = await self.router_cache.redis_cache.async_get_ttl(spend_key)
+        spend_key = f"provider_spend:{provider}:{budget_config.budget_duration}"
+        if self.dual_cache.redis_cache:
+            ttl_seconds = await self.dual_cache.redis_cache.async_get_ttl(spend_key)
         else:
-            ttl_seconds = await self.router_cache.async_get_ttl(spend_key)
+            ttl_seconds = await self.dual_cache.async_get_ttl(spend_key)
 
         if ttl_seconds is None:
             return None
@@ -684,19 +678,23 @@ class RouterBudgetLimiting(CustomLogger):
         - provider_budget_start_time:{provider} - stores the start time of the budget window
 
         """
-        spend_key = f"provider_spend:{provider}:{budget_config.time_period}"
+
+        spend_key = f"provider_spend:{provider}:{budget_config.budget_duration}"
         start_time_key = f"provider_budget_start_time:{provider}"
-        ttl_seconds = duration_in_seconds(budget_config.time_period)
-        budget_start = await self.router_cache.async_get_cache(start_time_key)
+        ttl_seconds: Optional[int] = None
+        if budget_config.budget_duration is not None:
+            ttl_seconds = duration_in_seconds(budget_config.budget_duration)
+
+        budget_start = await self.dual_cache.async_get_cache(start_time_key)
         if budget_start is None:
             budget_start = datetime.now(timezone.utc).timestamp()
-            await self.router_cache.async_set_cache(
+            await self.dual_cache.async_set_cache(
                 key=start_time_key, value=budget_start, ttl=ttl_seconds
             )
 
-        _spend_key = await self.router_cache.async_get_cache(spend_key)
+        _spend_key = await self.dual_cache.async_get_cache(spend_key)
         if _spend_key is None:
-            await self.router_cache.async_set_cache(
+            await self.dual_cache.async_set_cache(
                 key=spend_key, value=0.0, ttl=ttl_seconds
             )
 
@@ -796,6 +794,12 @@ class RouterBudgetLimiting(CustomLogger):
     def _init_tag_budgets(self):
         if litellm.tag_budget_config is None:
             return
+        from litellm.proxy.proxy_server import CommonProxyErrors, premium_user
+
+        if premium_user is not True:
+            raise ValueError(
+                f"Tag budgets are an Enterprise only feature, {CommonProxyErrors.not_premium_user}"
+            )
 
         if self.tag_budget_config is None:
             self.tag_budget_config = {}

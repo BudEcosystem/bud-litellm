@@ -1,14 +1,10 @@
 import json
 import time
-import traceback
-import types
 import uuid
-from itertools import chain
 from typing import Any, List, Optional
 
 import aiohttp
 import httpx
-import requests
 from pydantic import BaseModel
 
 import litellm
@@ -158,6 +154,8 @@ class OllamaChatConfig(OpenAIGPTConfig):
                 optional_params["stop"] = value
             if param == "response_format" and value["type"] == "json_object":
                 optional_params["format"] = "json"
+            if param == "response_format" and value["type"] == "json_schema":
+                optional_params["format"] = value["json_schema"]["schema"]
             ### FUNCTION CALLING LOGIC ###
             if param == "tools":
                 # ollama actually supports json output
@@ -223,6 +221,7 @@ def get_ollama_response(  # noqa: PLR0915
 
     stream = optional_params.pop("stream", False)
     format = optional_params.pop("format", None)
+    keep_alive = optional_params.pop("keep_alive", None)
     function_name = optional_params.pop("function_name", None)
     tools = optional_params.pop("tools", None)
 
@@ -260,6 +259,8 @@ def get_ollama_response(  # noqa: PLR0915
         data["format"] = format
     if tools is not None:
         data["tools"] = tools
+    if keep_alive is not None:
+        data["keep_alive"] = keep_alive
     ## LOGGING
     logging_obj.pre_call(
         input=None,
@@ -297,13 +298,14 @@ def get_ollama_response(  # noqa: PLR0915
             url=url, api_key=api_key, data=data, logging_obj=logging_obj
         )
 
-    _request = {
-        "url": f"{url}",
-        "json": data,
-    }
+    headers: Optional[dict] = None
     if api_key is not None:
-        _request["headers"] = {"Authorization": "Bearer {}".format(api_key)}
-    response = requests.post(**_request)  # type: ignore
+        headers = {"Authorization": "Bearer {}".format(api_key)}
+    response = litellm.module_level_client.post(
+        url=url,
+        json=data,
+        headers=headers,
+    )
     if response.status_code != 200:
         raise OllamaError(status_code=response.status_code, message=response.text)
 

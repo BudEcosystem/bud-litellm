@@ -16,11 +16,10 @@ For batching specific details see CustomBatchLogger class
 import asyncio
 import datetime
 import os
-import sys
 import traceback
 import uuid
 from datetime import datetime as datetimeObj
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, List, Optional, Union
 
 from httpx import Response
 
@@ -32,7 +31,6 @@ from litellm.llms.custom_httpx.http_handler import (
     get_async_httpx_client,
     httpxSpecialProvider,
 )
-from litellm.proxy._types import UserAPIKeyAuth
 from litellm.types.integrations.datadog import *
 from litellm.types.services import ServiceLoggerPayload
 from litellm.types.utils import StandardLoggingPayload
@@ -258,10 +256,6 @@ class DataDogLogger(CustomBatchLogger):
         """
         import json
 
-        from litellm.litellm_core_utils.litellm_logging import (
-            truncate_standard_logging_payload_content,
-        )
-
         standard_logging_object: Optional[StandardLoggingPayload] = kwargs.get(
             "standard_logging_object", None
         )
@@ -273,14 +267,16 @@ class DataDogLogger(CustomBatchLogger):
             status = DataDogStatus.ERROR
 
         # Build the initial payload
-        truncate_standard_logging_payload_content(standard_logging_object)
-        json_payload = json.dumps(standard_logging_object)
+        self.truncate_standard_logging_payload_content(standard_logging_object)
+        json_payload = json.dumps(standard_logging_object, default=str)
 
         verbose_logger.debug("Datadog: Logger - Logging payload = %s", json_payload)
 
         dd_payload = DatadogPayload(
             ddsource=self._get_datadog_source(),
-            ddtags=self._get_datadog_tags(),
+            ddtags=self._get_datadog_tags(
+                standard_logging_object=standard_logging_object
+            ),
             hostname=self._get_datadog_hostname(),
             message=json_payload,
             service=self._get_datadog_service(),
@@ -300,7 +296,7 @@ class DataDogLogger(CustomBatchLogger):
         import gzip
         import json
 
-        compressed_data = gzip.compress(json.dumps(data).encode("utf-8"))
+        compressed_data = gzip.compress(json.dumps(data, default=str).encode("utf-8"))
         response = await self.async_client.post(
             url=self.intake_url,
             data=compressed_data,  # type: ignore
@@ -331,7 +327,7 @@ class DataDogLogger(CustomBatchLogger):
             import json
 
             _payload_dict = payload.model_dump()
-            _dd_message_str = json.dumps(_payload_dict)
+            _dd_message_str = json.dumps(_payload_dict, default=str)
             _dd_payload = DatadogPayload(
                 ddsource="litellm",
                 ddtags="",
@@ -435,7 +431,7 @@ class DataDogLogger(CustomBatchLogger):
             "metadata": clean_metadata,
         }
 
-        json_payload = json.dumps(payload)
+        json_payload = json.dumps(payload, default=str)
 
         verbose_logger.debug("Datadog: Logger - Logging payload = %s", json_payload)
 
@@ -450,8 +446,33 @@ class DataDogLogger(CustomBatchLogger):
         return dd_payload
 
     @staticmethod
-    def _get_datadog_tags():
-        return f"env:{os.getenv('DD_ENV', 'unknown')},service:{os.getenv('DD_SERVICE', 'litellm')},version:{os.getenv('DD_VERSION', 'unknown')},HOSTNAME:{DataDogLogger._get_datadog_hostname()},POD_NAME:{os.getenv('POD_NAME', 'unknown')}"
+    def _get_datadog_tags(
+        standard_logging_object: Optional[StandardLoggingPayload] = None,
+    ) -> str:
+        """
+        Get the datadog tags for the request
+
+        DD tags need to be as follows:
+            - tags: ["user_handle:dog@gmail.com", "app_version:1.0.0"]
+        """
+        base_tags = {
+            "env": os.getenv("DD_ENV", "unknown"),
+            "service": os.getenv("DD_SERVICE", "litellm"),
+            "version": os.getenv("DD_VERSION", "unknown"),
+            "HOSTNAME": DataDogLogger._get_datadog_hostname(),
+            "POD_NAME": os.getenv("POD_NAME", "unknown"),
+        }
+
+        tags = [f"{k}:{v}" for k, v in base_tags.items()]
+
+        if standard_logging_object:
+            _request_tags: List[str] = (
+                standard_logging_object.get("request_tags", []) or []
+            )
+            request_tags = [f"request_tag:{tag}" for tag in _request_tags]
+            tags.extend(request_tags)
+
+        return ",".join(tags)
 
     @staticmethod
     def _get_datadog_source():

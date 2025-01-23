@@ -24,6 +24,7 @@ import litellm
 from litellm import RateLimitError, Timeout, completion, completion_cost, embedding
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
 from litellm.litellm_core_utils.prompt_templates.factory import anthropic_messages_pt
+from test_amazing_vertex_completion import load_vertex_ai_credentials
 
 # litellm.num_retries =3
 litellm.cache = None
@@ -202,6 +203,28 @@ def anthropic_messages():
             ],
         },
     ]
+
+
+def test_anthropic_vertex_ai_prompt_caching(anthropic_messages):
+    litellm._turn_on_debug()
+    from litellm.llms.custom_httpx.http_handler import HTTPHandler
+
+    load_vertex_ai_credentials()
+
+    client = HTTPHandler()
+    with patch.object(client, "post", return_value=MagicMock()) as mock_post:
+        try:
+            response = completion(
+                model="vertex_ai/claude-3-5-sonnet-v2@20241022 ",
+                messages=anthropic_messages,
+                client=client,
+            )
+        except Exception as e:
+            print(f"Error: {e}")
+
+        mock_post.assert_called_once()
+        print(mock_post.call_args.kwargs["headers"])
+        assert "anthropic-beta" not in mock_post.call_args.kwargs["headers"]
 
 
 @pytest.mark.asyncio()
@@ -653,9 +676,9 @@ async def test_router_prompt_caching_model_stored(
 
 
 @pytest.mark.asyncio()
-@pytest.mark.skip(
-    reason="BETA FEATURE - skipping since this led to a latency impact, beta feature that is not used as yet"
-)
+# @pytest.mark.skip(
+#     reason="BETA FEATURE - skipping since this led to a latency impact, beta feature that is not used as yet"
+# )
 async def test_router_with_prompt_caching(anthropic_messages):
     """
     if prompt caching supported model called with prompt caching valid prompt,
@@ -672,15 +695,18 @@ async def test_router_with_prompt_caching(anthropic_messages):
                 "litellm_params": {
                     "model": "anthropic/claude-3-5-sonnet-20240620",
                     "api_key": os.environ.get("ANTHROPIC_API_KEY"),
+                    "mock_response": "The sky is blue.",
                 },
             },
             {
                 "model_name": "claude-model",
                 "litellm_params": {
                     "model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+                    "mock_response": "The sky is green.",
                 },
             },
-        ]
+        ],
+        optional_pre_call_checks=["prompt_caching"],
     )
 
     response = await router.acompletion(
@@ -699,6 +725,7 @@ async def test_router_with_prompt_caching(anthropic_messages):
 
     cached_model_id = cache.get_model_id(messages=anthropic_messages, tools=None)
 
+    assert cached_model_id is not None
     prompt_caching_cache_key = PromptCachingCache.get_prompt_caching_cache_key(
         messages=anthropic_messages, tools=None
     )
@@ -709,18 +736,12 @@ async def test_router_with_prompt_caching(anthropic_messages):
         {"role": "user", "content": "What is the weather in SF?"}
     ]
 
-    pc_deployment = await cache.async_get_prompt_caching_deployment(
-        router=router,
-        messages=new_messages,
-        tools=None,
-    )
-    assert pc_deployment is not None
+    for _ in range(20):
+        response = await router.acompletion(
+            messages=new_messages,
+            model="claude-model",
+            mock_response="The sky is blue.",
+        )
+        print("response=", response)
 
-    response = await router.acompletion(
-        messages=new_messages,
-        model="claude-model",
-        mock_response="The sky is blue.",
-    )
-    print("response=", response)
-
-    assert response._hidden_params["model_id"] == initial_model_id
+        assert response._hidden_params["model_id"] == initial_model_id

@@ -5,7 +5,7 @@ litellm.Router Types - includes RouterConfig, UpdateRouterConfig, ModelInfo etc
 import datetime
 import enum
 import uuid
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union, get_type_hints
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,7 +14,7 @@ from typing_extensions import Required, TypedDict
 from ..exceptions import RateLimitError
 from .completion import CompletionRequest
 from .embedding import EmbeddingRequest
-from .utils import ModelResponse
+from .utils import ModelResponse, ProviderSpecificModelInfo
 
 
 class ConfigurableClientsideParamsCustomAuth(TypedDict):
@@ -352,6 +352,7 @@ class LiteLLMParamsTypedDict(TypedDict, total=False):
     output_cost_per_token: Optional[float]
     input_cost_per_second: Optional[float]
     output_cost_per_second: Optional[float]
+    num_retries: Optional[int]
     ## MOCK RESPONSES ##
     mock_response: Optional[Union[str, ModelResponse, Exception]]
 
@@ -509,13 +510,17 @@ class ModelGroupInfo(BaseModel):
     input_cost_per_token: Optional[float] = None
     output_cost_per_token: Optional[float] = None
     mode: Optional[
-        Literal[
-            "chat",
-            "embedding",
-            "completion",
-            "image_generation",
-            "audio_transcription",
-            "rerank",
+        Union[
+            str,
+            Literal[
+                "chat",
+                "embedding",
+                "completion",
+                "image_generation",
+                "audio_transcription",
+                "rerank",
+                "moderations",
+            ],
         ]
     ] = Field(default="chat")
     tpm: Optional[int] = None
@@ -525,6 +530,12 @@ class ModelGroupInfo(BaseModel):
     supports_function_calling: bool = Field(default=False)
     supported_openai_params: Optional[List[str]] = Field(default=[])
     configurable_clientside_auth_params: CONFIGURABLE_CLIENTSIDE_AUTH_PARAMS = None
+
+    def __init__(self, **data):
+        for field_name, field_type in get_type_hints(self.__class__).items():
+            if field_type == bool and data.get(field_name) is None:
+                data[field_name] = False
+        super().__init__(**data)
 
 
 class AssistantsTypedDict(TypedDict):
@@ -647,14 +658,6 @@ class RoutingStrategy(enum.Enum):
     PROVIDER_BUDGET_LIMITING = "provider-budget-routing"
 
 
-class GenericBudgetInfo(BaseModel):
-    time_period: str  # e.g., '1d', '30d'
-    budget_limit: float
-
-
-GenericBudgetConfigType = Dict[str, GenericBudgetInfo]
-
-
 class RouterCacheEnum(enum.Enum):
     TPM = "global_router:{id}:{model}:tpm:{current_minute}"
     RPM = "global_router:{id}:{model}:rpm:{current_minute}"
@@ -667,3 +670,6 @@ class GenericBudgetWindowDetails(BaseModel):
     spend_key: str
     start_time_key: str
     ttl_seconds: int
+
+
+OptionalPreCallChecks = List[Literal["prompt_caching", "router_budget_limiting"]]

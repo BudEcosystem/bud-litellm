@@ -1,11 +1,7 @@
 import asyncio
 import json
-import os
 import time
-import types
-from typing import Any, Callable, List, Optional, Tuple, Union
-
-import httpx  # type: ignore
+from typing import Callable, List, Union
 
 import litellm
 from litellm.llms.custom_httpx.http_handler import (
@@ -15,7 +11,7 @@ from litellm.llms.custom_httpx.http_handler import (
     get_async_httpx_client,
 )
 from litellm.types.llms.openai import AllMessageValues
-from litellm.utils import CustomStreamWrapper, ModelResponse, Usage
+from litellm.utils import CustomStreamWrapper, ModelResponse
 
 from ..common_utils import ReplicateError
 from .transformation import ReplicateConfig
@@ -172,7 +168,9 @@ def completion(
         time.time()
     )  # for pricing this must remain right before calling api
 
-    prediction_url = replicate_config.get_complete_url(api_base, model)
+    prediction_url = replicate_config.get_complete_url(
+        api_base=api_base, model=model, optional_params=optional_params
+    )
 
     ## COMPLETION CALL
     httpx_client = _get_httpx_client(
@@ -239,7 +237,9 @@ async def async_completion(
     headers: dict,
 ) -> Union[ModelResponse, CustomStreamWrapper]:
 
-    prediction_url = replicate_config.get_complete_url(api_base=api_base, model=model)
+    prediction_url = replicate_config.get_complete_url(
+        api_base=api_base, model=model, optional_params=optional_params
+    )
     async_handler = get_async_httpx_client(
         llm_provider=litellm.LlmProviders.REPLICATE,
         params={"timeout": 600.0},

@@ -1,14 +1,20 @@
 model_list:
-  - model_name: gpt-4o
+  - model_name: openai/*
     litellm_params:
-      model: openai/gpt-4o
+      model:  openai/*
       api_key: os.environ/OPENAI_API_KEY
+  - model_name: text-embedding-ada-002
+    litellm_params:
+      model: openai/text-embedding-ada-002
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: fake-openai-endpoint
+    litellm_params:
+      model: openai/fake
+      api_key: fake-key
+      api_base: https://exampleopenaiendpoint-production.up.railway.app/
+
+general_settings:
+  store_prompts_in_spend_logs: true
 
 litellm_settings:
-  tag_budget_config:
-    product:chat-bot: # (Tag)
-      max_budget: 0.000000000001 # (USD)
-      budget_duration: 1d # (Duration)
-    product:chat-bot-2: # (Tag)
-      max_budget: 100 # (USD)
-      budget_duration: 1d # (Duration)
+  callbacks: ["prometheus"]
