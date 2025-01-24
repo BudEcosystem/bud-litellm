@@ -171,6 +171,7 @@ class MyCustomHandler(CustomLogger):
                 event_type="add_request_metrics",
             )
         credential_update_request = self.get_credential_update_request(kwargs, response_obj, start_time, end_time)
+        verbose_logger.info(f"Credential Update Request: {credential_update_request}")
         if credential_update_request:
             with DaprService() as dapr_service:
                 dapr_service.publish_to_topic(
