@@ -166,6 +166,7 @@ class MyCustomHandler(CustomLogger):
         with DaprService() as dapr_service:
             dapr_service.publish_to_topic(
                 data=metrics_data_json,
+                pubsub_name="pubsub-redis",
                 target_topic_name=app_settings.budmetrics_topic_name,
                 target_name=app_settings.budmetrics_app_name,
                 event_type="add_request_metrics",
@@ -176,6 +177,7 @@ class MyCustomHandler(CustomLogger):
             with DaprService() as dapr_service:
                 dapr_service.publish_to_topic(
                     data=credential_update_request.model_dump(mode="json"),
+                    pubsub_name="pubsub-redis",
                     target_topic_name=app_settings.budapp_topic_name,
                     target_name=app_settings.budapp_app_name,
                     event_type="credential_update",
@@ -191,6 +193,7 @@ class MyCustomHandler(CustomLogger):
             with DaprService() as dapr_service:
                 dapr_service.publish_to_topic(
                     data=metrics_data_json,
+                    pubsub_name="pubsub-redis",
                     target_topic_name=app_settings.budmetrics_topic_name,
                     target_name=app_settings.budmetrics_app_name,
                     event_type="add_request_metrics",
