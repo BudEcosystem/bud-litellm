@@ -150,7 +150,7 @@ class MyCustomHandler(CustomLogger):
     def get_credential_update_request(self, kwargs, response_obj, start_time, end_time) -> CredentialUpdateRequest:
         litellm_params = kwargs.get("litellm_params", {})
         metadata = litellm_params.get("metadata", {})
-        api_key_hash = metadata.get("api_key_hash")
+        api_key_hash = metadata.get("user_api_key_hash")
         return CredentialUpdateRequest(
             payload=CredentialUpdatePayload(
                 hashed_key=api_key_hash,

@@ -27,10 +27,6 @@ class LiteLLMDatabaseConnectionPool(Enum):
 
 
 def append_query_params(url, params) -> str:
-    from litellm._logging import verbose_proxy_logger
-
-    verbose_proxy_logger.debug(f"url: {url}")
-    verbose_proxy_logger.debug(f"params: {params}")
     parsed_url = urlparse.urlparse(url)
     parsed_query = urlparse.parse_qs(parsed_url.query)
     parsed_query.update(params)
