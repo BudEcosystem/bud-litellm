@@ -21,14 +21,21 @@ class BudServeMiddleware(BaseHTTPMiddleware):
 
     async def get_api_key(self, request):
         authorization_header = request.headers.get("Authorization")
-        if not authorization_header:
+        x_api_key_header = request.headers.get("X-Api-Key")
+        api_key_header = request.headers.get("Api-Key")
+        if not authorization_header and not x_api_key_header and not api_key_header:
             raise ProxyException(
-                message="Authorization header is missing",
+                message="Authorization/X-Api-Key/Api-Key header is missing",
                 type="unauthorized",
                 param="Authorization",
                 code=401
             )
-        api_key = authorization_header.split(" ")[1]
+        if authorization_header:
+            api_key = authorization_header.split(" ")[1]
+        elif x_api_key_header:
+            api_key = x_api_key_header
+        elif api_key_header:
+            api_key = api_key_header
         return api_key
     
     async def fetch_user_config(self, api_key: str, endpoint_name: str):
