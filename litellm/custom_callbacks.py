@@ -86,11 +86,12 @@ class MyCustomHandler(CustomLogger):
     def get_request_metrics(self, kwargs, response_obj, start_time, end_time, failure=False) -> RequestMetrics:
         # log: key, user, model, prompt, response, tokens, cost
         # Access kwargs passed to litellm.completion()
-        verbose_logger.info(f"\nkwargs : {kwargs}")
+        # verbose_logger.info(f"\nkwargs : {kwargs}")
         # verbose_logger.info(f"\nresponse_obj : {response_obj}")
 
         model = kwargs.get("model", None)
         is_cache_hit = kwargs.get("cache_hit")
+        verbose_logger.info(f"\nresponse from cache : {is_cache_hit}")
         response_body = copy.deepcopy(kwargs.get("standard_logging_object", {}).get("response", {})) if not failure else {
             "exception": str(kwargs.get("exception", None)),
             "traceback": kwargs.get("traceback_exception", None) 
@@ -116,7 +117,24 @@ class MyCustomHandler(CustomLogger):
         
         # Calculate cost using  litellm.completion_cost()
         response_obj = response_obj or {}
-        cost = litellm.completion_cost(completion_response=response_obj) if not failure else 0
+        original_model = None
+        if isinstance(response_obj, dict) and response_obj.get("model"):
+            original_model = response_obj.get("model")
+            response_obj["model"] = model_info.get("deploy_model_uri", None)
+        elif hasattr(response_obj, "model"):
+            original_model = response_obj.model
+            response_obj.model = model_info.get("deploy_model_uri", None)
+        
+        if model_info.get("cloud", False) and not is_cache_hit:
+            cost = litellm.completion_cost(completion_response=response_obj) if not failure else 0
+        else:
+            # TODO: need some way to calculate cost for local models
+            cost = 0
+            
+        if isinstance(response_obj, dict) and response_obj.get("model"):
+            response_obj["model"] = original_model
+        elif hasattr(response_obj, "model"):
+            response_obj.model = original_model
 
         usage = response_obj.get("usage", None) or {}
         if isinstance(usage, litellm.Usage):
@@ -162,7 +180,7 @@ class MyCustomHandler(CustomLogger):
         verbose_logger.info("On Async Success!")
         metrics_data = self.get_request_metrics(kwargs, response_obj, start_time, end_time)
         metrics_data_json = metrics_data.model_dump(mode="json")
-        verbose_logger.info(f"Metrics Data JSON: {metrics_data_json}")
+        # verbose_logger.info(f"Metrics Data JSON: {metrics_data_json}")
         with DaprService() as dapr_service:
             dapr_service.publish_to_topic(
                 data=metrics_data_json,
@@ -172,7 +190,7 @@ class MyCustomHandler(CustomLogger):
                 event_type="add_request_metrics",
             )
         credential_update_request = self.get_credential_update_request(kwargs, response_obj, start_time, end_time)
-        verbose_logger.info(f"Credential Update Request: {credential_update_request}")
+        # verbose_logger.info(f"Credential Update Request: {credential_update_request}")
         if credential_update_request:
             with DaprService() as dapr_service:
                 dapr_service.publish_to_topic(
@@ -189,7 +207,7 @@ class MyCustomHandler(CustomLogger):
             verbose_logger.info("On Async Failure !")
             metrics_data = self.get_request_metrics(kwargs, response_obj, start_time, end_time, failure=True)
             metrics_data_json = metrics_data.model_dump(mode="json")
-            verbose_logger.info(f"Metrics Data JSON: {metrics_data_json}")
+            # verbose_logger.info(f"Metrics Data JSON: {metrics_data_json}")
             with DaprService() as dapr_service:
                 dapr_service.publish_to_topic(
                     data=metrics_data_json,
