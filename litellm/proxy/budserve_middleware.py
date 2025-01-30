@@ -2,6 +2,8 @@ import json
 import httpx
 import os
 
+from litellm.commons.config import app_settings, secrets_settings
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from litellm._logging import verbose_proxy_logger
 from litellm.proxy.auth.auth_utils import get_request_route
@@ -103,6 +105,7 @@ class BudServeMiddleware(BaseHTTPMiddleware):
 
         # get endpoint details to fill cache_params
         user_config = await self.fetch_user_config(api_key, endpoint_name)
+
         
         request_data["metadata"] = {
             "project_id": user_config.get("project_id"),
@@ -113,43 +116,43 @@ class BudServeMiddleware(BaseHTTPMiddleware):
         # can be fetched using os.getenv
         request_data["user_config"] = {
             "cache_responses": False if not user_config.get("cache_configuration") else True,
-            "redis_host": os.getenv("REDIS_HOST", "localhost"),
-            "redis_port": os.getenv("REDIS_PORT", 6379),
-            "redis_password": os.getenv("REDIS_PASSWORD", ""),
+            "redis_host": app_settings.redis_host,
+            "redis_port": app_settings.redis_port,
+            "redis_password": secrets_settings.redis_password,
             "endpoint_cache_settings": {
                 "cache": False if not user_config.get("cache_configuration") else True,
                 "type": "gpt_cache_redis",  # redis-semantic
                 "cache_params": {
-                    "host": os.getenv("REDIS_HOST", "localhost"),
-                    "port": os.getenv("REDIS_PORT", 6379),
-                    "password": os.getenv("REDIS_PASSWORD", ""),
+                    "host": app_settings.redis_host,
+                    "port": app_settings.redis_port,
+                    "password": secrets_settings.redis_password,
                     "similarity_threshold": user_config  \
                         .get("cache_configuration", {})  \
                         .get("score_threshold") 
                         if user_config.get("cache_configuration") 
-                        else os.getenv("CACHE_SCORE_THRESHOLD"),
+                        else app_settings.cache_score_threshold,
                     "redis_semantic_cache_use_async": False,
                     "redis_semantic_cache_embedding_model": user_config  \
                         .get("cache_configuration", {})  \
                         .get("embedding_model") 
                         if user_config.get("cache_configuration") 
-                        else os.getenv("CACHE_EMBEDDING_MODEL"),
+                        else app_settings.cache_embedding_model,
                     "eviction_policy": {
                         "policy": user_config  \
                             .get("cache_configuration", {})  \
                             .get("eviction_policy")
                             if user_config.get("cache_configuration")
-                            else os.getenv("CACHE_EVICTION_POLICY"),
+                            else app_settings.cache_eviction_policy,
                         "max_size": user_config  \
                             .get("cache_configuration", {})  \
                             .get("max_size")
                             if user_config.get("cache_configuration")
-                            else os.getenv("CACHE_MAX_SIZE"),
+                            else app_settings.cache_max_size,
                         "ttl": user_config  \
                             .get("cache_configuration", {})  \
                             .get("ttl")
                             if user_config.get("cache_configuration")
-                            else os.getenv("CACHE_TTL")
+                            else app_settings.cache_ttl,
                     },
                 },
             },

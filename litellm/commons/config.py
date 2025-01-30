@@ -82,6 +82,13 @@ class SecretsConfig(BaseSecretsConfig):
         alias="PSQL_PASSWORD",
         json_schema_extra=enable_periodic_sync_from_store(is_global=True),
     )
+    
+    # Redis Config
+    redis_password: Optional[str] = Field(
+        None,
+        alias="REDIS_PASSWORD",
+        json_schema_extra=enable_periodic_sync_from_store(is_global=True),
+    )
 
 
 app_settings = AppConfig()

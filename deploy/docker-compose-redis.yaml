@@ -1,13 +1,13 @@
 services:
   bud-litellm-redis:
     container_name: bud-mf-$NAMESPACE-litellm-redis
-    image: redis:alpine
+    image: redis/redis-stack:latest
     ports:
       - "$REDIS_PORT:$REDIS_PORT"
     command:
       - /bin/sh
       - -c
-      - redis-server --requirepass "${SECRETS_REDIS_PASSWORD:?REDIS_PASSWORD variable is not set}" --port ${REDIS_PORT}
+      - redis-server --requirepass "${SECRETS_REDIS_PASSWORD:?REDIS_PASSWORD variable is not set}" --port ${REDIS_PORT} --loadmodule /opt/redis-stack/lib/redisearch.so --loadmodule /opt/redis-stack/lib/rejson.so
     sysctls:
       net.core.somaxconn: 1024
     healthcheck:
