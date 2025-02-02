@@ -105,7 +105,14 @@ class BudServeMiddleware(BaseHTTPMiddleware):
 
         # get endpoint details to fill cache_params
         user_config = await self.fetch_user_config(api_key, endpoint_name)
-
+        
+        user_config["cache_configuration"] = {
+            "score_threshold": 0.5,
+            "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+            "eviction_policy": "LRU",
+            "max_size": 1000,
+            "ttl": None
+        }
         
         request_data["metadata"] = {
             "project_id": user_config.get("project_id"),
@@ -123,9 +130,9 @@ class BudServeMiddleware(BaseHTTPMiddleware):
                 "cache": False if not user_config.get("cache_configuration") else True,
                 "type": "gpt_cache_redis",  # redis-semantic
                 "cache_params": {
-                    "host": app_settings.redis_host,
-                    "port": app_settings.redis_port,
-                    "password": secrets_settings.redis_password,
+                    "host": app_settings.cache_redis_host,
+                    "port": app_settings.cache_redis_port,
+                    "password": secrets_settings.cache_redis_password,
                     "similarity_threshold": user_config  \
                         .get("cache_configuration", {})  \
                         .get("score_threshold") 

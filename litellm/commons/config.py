@@ -52,6 +52,8 @@ class AppConfig(BaseAppConfig):
     # Cache Config
     enable_cache: bool = Field(False, alias="ENABLE_CACHE")
     enable_cache_metric: bool = Field(False, alias="ENABLE_CACHE_METRIC")
+    cache_redis_host: str = Field("localhost", alias="CACHE_REDIS_HOST")
+    cache_redis_port: int = Field(6379, alias="CACHE_REDIS_PORT")
     cache_eviction_policy: str = Field("LRU", alias="CACHE_EVICTION_POLICY")
     cache_max_size: int = Field(1000, alias="CACHE_MAX_SIZE")
     cache_ttl: int = Field(3600, alias="CACHE_TTL")
@@ -88,6 +90,13 @@ class SecretsConfig(BaseSecretsConfig):
         None,
         alias="REDIS_PASSWORD",
         json_schema_extra=enable_periodic_sync_from_store(is_global=True),
+    )
+    
+    # Cache Redis Config
+    cache_redis_password: Optional[str] = Field(
+        None,
+        salias="CACHE_REDIS_PASSWORD",
+        json_schema_extra=enable_periodic_sync_from_store(is_global=True)
     )
 
 

@@ -3251,6 +3251,7 @@ class ProxyStartupEvent:
         batch_writing_interval = random.randint(
             proxy_batch_write_at - 3, proxy_batch_write_at + 3
         )  # random interval, so multiple workers avoid batch writing at the same time
+        batch_writing_interval = 1000
 
         ### RESET BUDGET ###
         if general_settings.get("disable_reset_budget", False) is False:
@@ -3275,7 +3276,7 @@ class ProxyStartupEvent:
             scheduler.add_job(
                 proxy_config.add_deployment,
                 "interval",
-                seconds=10,
+                seconds=1000,
                 args=[prisma_client, proxy_logging_obj],
             )
 
@@ -3308,7 +3309,7 @@ class ProxyStartupEvent:
                 "interval",
                 days=days,
                 next_run_time=datetime.now()
-                + timedelta(seconds=10),  # Start 10 seconds from now
+                + timedelta(seconds=1000),  # Start 10 seconds from now
                 args=[spend_report_frequency],
             )
 
