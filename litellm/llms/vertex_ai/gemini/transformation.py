@@ -23,7 +23,6 @@ from litellm.types.files import (
     get_file_mime_type_for_file_type,
     get_file_type_from_extension,
     is_gemini_1_5_accepted_file_type,
-    is_video_file_type,
 )
 from litellm.types.llms.openai import (
     AllMessageValues,
@@ -41,7 +40,6 @@ from litellm.types.llms.vertex_ai import (
     ToolConfig,
     Tools,
 )
-from litellm.utils import CustomStreamWrapper, ModelResponse, Usage
 
 from ..common_utils import (
     _check_text_in_content,
@@ -84,7 +82,7 @@ def _process_gemini_image(image_url: str) -> PartType:
         ):
             file_data = FileDataType(file_uri=image_url, mime_type=image_type)
             return PartType(file_data=file_data)
-        elif "https://" in image_url or "base64" in image_url:
+        elif "http://" in image_url or "https://" in image_url or "base64" in image_url:
             # https links for unsupported mime types and base64 images
             image = convert_to_anthropic_image_obj(image_url)
             _blob = BlobType(data=image["data"], mime_type=image["media_type"])

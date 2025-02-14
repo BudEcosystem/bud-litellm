@@ -4,9 +4,7 @@ import os
 import random
 import subprocess
 import sys
-import traceback
 import urllib.parse as urlparse
-from datetime import datetime
 
 import click
 from dotenv import load_dotenv
@@ -18,9 +16,7 @@ config_filename = "litellm.secrets"
 litellm_mode = os.getenv("LITELLM_MODE", "DEV")  # "PRODUCTION", "DEV"
 if litellm_mode == "DEV":
     load_dotenv()
-import shutil
 from enum import Enum
-from importlib import resources
 
 telemetry = None
 
@@ -31,10 +27,6 @@ class LiteLLMDatabaseConnectionPool(Enum):
 
 
 def append_query_params(url, params) -> str:
-    from litellm._logging import verbose_proxy_logger
-
-    verbose_proxy_logger.debug(f"url: {url}")
-    verbose_proxy_logger.debug(f"params: {params}")
     parsed_url = urlparse.urlparse(url)
     parsed_query = urlparse.parse_qs(parsed_url.query)
     parsed_query.update(params)
@@ -72,7 +64,7 @@ def is_port_in_use(port):
 @click.option(
     "--num_workers",
     default=1,
-    help="Number of gunicorn workers to spin up",
+    help="Number of uvicorn / gunicorn workers to spin up. By default, 1 uvicorn is used.",
     envvar="NUM_WORKERS",
 )
 @click.option("--api_base", default=None, help="API base URL.")
@@ -125,7 +117,7 @@ def is_port_in_use(port):
 )
 @click.option(
     "--request_timeout",
-    default=6000,
+    default=None,
     type=int,
     help="Set timeout in seconds for completion calls",
 )
@@ -261,24 +253,16 @@ def run_server(  # noqa: PLR0915
     if local:
         from proxy_server import (
             KeyManagementSettings,
-            KeyManagementSystem,
             ProxyConfig,
             app,
-            load_aws_kms,
-            load_from_azure_key_vault,
-            load_google_kms,
             save_worker_config,
         )
     else:
         try:
             from .proxy_server import (
                 KeyManagementSettings,
-                KeyManagementSystem,
                 ProxyConfig,
                 app,
-                load_aws_kms,
-                load_from_azure_key_vault,
-                load_google_kms,
                 save_worker_config,
             )
         except ImportError as e:
@@ -289,12 +273,8 @@ def run_server(  # noqa: PLR0915
                 # this is just a local/relative import error, user git cloned litellm
                 from proxy_server import (
                     KeyManagementSettings,
-                    KeyManagementSystem,
                     ProxyConfig,
                     app,
-                    load_aws_kms,
-                    load_from_azure_key_vault,
-                    load_google_kms,
                     save_worker_config,
                 )
     if version is True:
@@ -303,7 +283,7 @@ def run_server(  # noqa: PLR0915
         return
     if model and "ollama" in model and api_base is None:
         run_ollama_serve()
-    import requests
+    import httpx
 
     if test_async is True:
         import concurrent
@@ -319,7 +299,7 @@ def run_server(  # noqa: PLR0915
                 ],
             }
 
-            response = requests.post("http://0.0.0.0:4000/queue/request", json=data)
+            response = httpx.post("http://0.0.0.0:4000/queue/request", json=data)
 
             response = response.json()
 
@@ -327,7 +307,7 @@ def run_server(  # noqa: PLR0915
                 try:
                     url = response["url"]
                     polling_url = f"{api_base}{url}"
-                    polling_response = requests.get(polling_url)
+                    polling_response = httpx.get(polling_url)
                     polling_response = polling_response.json()
                     print("\n RESPONSE FROM POLLING JOB", polling_response)  # noqa
                     status = polling_response["status"]
@@ -378,7 +358,7 @@ def run_server(  # noqa: PLR0915
     if health is not False:
 
         print("\nLiteLLM: Health Testing models in config")  # noqa
-        response = requests.get(url=f"http://{host}:{port}/health")
+        response = httpx.get(url=f"http://{host}:{port}/health")
         print(json.dumps(response.json(), indent=4))  # noqa
         return
     if test is not False:
@@ -512,7 +492,6 @@ def run_server(  # noqa: PLR0915
             try:
                 import asyncio
 
-                import yaml  # type: ignore
             except Exception:
                 raise ImportError(
                     "yaml needs to be imported. Run - `pip install 'litellm[proxy]'`"
@@ -542,41 +521,7 @@ def run_server(  # noqa: PLR0915
                 key_management_system = general_settings.get(
                     "key_management_system", None
                 )
-                if key_management_system is not None:
-                    if (
-                        key_management_system
-                        == KeyManagementSystem.AZURE_KEY_VAULT.value
-                    ):
-                        ### LOAD FROM AZURE KEY VAULT ###
-                        load_from_azure_key_vault(use_azure_key_vault=True)
-                    elif key_management_system == KeyManagementSystem.GOOGLE_KMS.value:
-                        ### LOAD FROM GOOGLE KMS ###
-                        load_google_kms(use_google_kms=True)
-                    elif (
-                        key_management_system
-                        == KeyManagementSystem.AWS_SECRET_MANAGER.value  # noqa: F405
-                    ):
-                        from litellm.secret_managers.aws_secret_manager_v2 import (
-                            AWSSecretsManagerV2,
-                        )
-
-                        ### LOAD FROM AWS SECRET MANAGER ###
-                        AWSSecretsManagerV2.load_aws_secret_manager(
-                            use_aws_secret_manager=True
-                        )
-                    elif key_management_system == KeyManagementSystem.AWS_KMS.value:
-                        load_aws_kms(use_aws_kms=True)
-                    elif (
-                        key_management_system
-                        == KeyManagementSystem.GOOGLE_SECRET_MANAGER.value
-                    ):
-                        from litellm.secret_managers.google_secret_manager import (
-                            GoogleSecretManager,
-                        )
-
-                        GoogleSecretManager()
-                    else:
-                        raise ValueError("Invalid Key Management System selected")
+                proxy_config.initialize_secret_manager(key_management_system)
             key_management_settings = general_settings.get(
                 "key_management_settings", None
             )
@@ -631,6 +576,7 @@ def run_server(  # noqa: PLR0915
         ):
             try:
                 from litellm.secret_managers.main import get_secret
+                from litellm._logging import verbose_proxy_logger
 
                 if os.getenv("DATABASE_URL", None) is not None:
                     ### add connection pool + pool timeout args
@@ -651,10 +597,14 @@ def run_server(  # noqa: PLR0915
                     modified_url = append_query_params(database_url, params)
                     os.environ["DIRECT_URL"] = modified_url
                     ###
+                verbose_proxy_logger.info("Running prisma db push")
                 subprocess.run(["prisma"], capture_output=True)
+                verbose_proxy_logger.info("Prisma db push complete")
                 is_prisma_runnable = True
             except FileNotFoundError:
                 is_prisma_runnable = False
+            except Exception as e:
+                print(e)
 
             if is_prisma_runnable:
                 from litellm.proxy.db.check_migration import check_prisma_schema_diff
@@ -704,7 +654,7 @@ def run_server(  # noqa: PLR0915
         from litellm.proxy.proxy_server import app  # noqa
 
         uvicorn_args = {
-            "app": app,
+            "app": "litellm.proxy.proxy_server:app",
             "host": host,
             "port": port,
         }
@@ -722,7 +672,11 @@ def run_server(  # noqa: PLR0915
                 )
                 uvicorn_args["ssl_keyfile"] = ssl_keyfile_path
                 uvicorn_args["ssl_certfile"] = ssl_certfile_path
-            uvicorn.run(**uvicorn_args)
+            uvicorn.run(
+                **uvicorn_args,
+                loop="uvloop",
+                workers=num_workers,
+            )
         elif run_gunicorn is True:
             # Gunicorn Application Class
             class StandaloneApplication(gunicorn.app.base.BaseApplication):

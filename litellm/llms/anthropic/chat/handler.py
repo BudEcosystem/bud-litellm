@@ -4,32 +4,23 @@ Calling + translation logic for anthropic's `/v1/messages` endpoint
 
 import copy
 import json
-import os
-import time
-import traceback
-import types
-from enum import Enum
-from functools import partial
-from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
+from typing import Any, Callable, List, Optional, Tuple, Union
 
 import httpx  # type: ignore
-import requests  # type: ignore
-from openai.types.chat.chat_completion_chunk import Choice as OpenAIStreamingChoice
 
 import litellm
 import litellm.litellm_core_utils
 import litellm.types
 import litellm.types.utils
-from litellm import LlmProviders, verbose_logger
+from litellm import LlmProviders
 from litellm.litellm_core_utils.core_helpers import map_finish_reason
+from litellm.llms.base_llm.chat.transformation import BaseConfig
 from litellm.llms.custom_httpx.http_handler import (
     AsyncHTTPHandler,
     HTTPHandler,
-    _get_httpx_client,
     get_async_httpx_client,
 )
 from litellm.types.llms.anthropic import (
-    AllAnthropicToolsValues,
     AnthropicChatCompletionUsageBlock,
     ContentBlockDelta,
     ContentBlockStart,
@@ -39,9 +30,7 @@ from litellm.types.llms.anthropic import (
     UsageDelta,
 )
 from litellm.types.llms.openai import (
-    AllMessageValues,
     ChatCompletionToolCallChunk,
-    ChatCompletionToolCallFunctionChunk,
     ChatCompletionUsageBlock,
 )
 from litellm.types.utils import GenericStreamingChunk
@@ -226,6 +215,7 @@ class AnthropicChatCompletion(BaseLLM):
         optional_params: dict,
         json_mode: bool,
         litellm_params: dict,
+        provider_config: BaseConfig,
         logger_fn=None,
         headers={},
         client: Optional[AsyncHTTPHandler] = None,
@@ -260,7 +250,7 @@ class AnthropicChatCompletion(BaseLLM):
                 headers=error_headers,
             )
 
-        return AnthropicConfig().transform_response(
+        return provider_config.transform_response(
             model=model,
             raw_response=response,
             model_response=model_response,
@@ -294,6 +284,7 @@ class AnthropicChatCompletion(BaseLLM):
         headers={},
         client=None,
     ):
+
         optional_params = copy.deepcopy(optional_params)
         stream = optional_params.pop("stream", None)
         json_mode: bool = optional_params.pop("json_mode", False)
@@ -374,6 +365,7 @@ class AnthropicChatCompletion(BaseLLM):
                     print_verbose=print_verbose,
                     encoding=encoding,
                     api_key=api_key,
+                    provider_config=config,
                     logging_obj=logging_obj,
                     optional_params=optional_params,
                     stream=stream,
@@ -438,7 +430,7 @@ class AnthropicChatCompletion(BaseLLM):
                         headers=error_headers,
                     )
 
-        return AnthropicConfig().transform_response(
+        return config.transform_response(
             model=model,
             raw_response=response,
             model_response=model_response,

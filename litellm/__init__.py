@@ -2,7 +2,7 @@
 import warnings
 
 warnings.filterwarnings("ignore", message=".*conflict with protected namespace.*")
-### INIT VARIABLES ###
+### INIT VARIABLES ######
 import threading
 import os
 from typing import Callable, List, Optional, Dict, Union, Any, Literal, get_args
@@ -18,6 +18,7 @@ from litellm._logging import (
     _turn_on_json,
     log_level,
 )
+import re
 from litellm.constants import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_FLUSH_INTERVAL_SECONDS,
@@ -26,6 +27,8 @@ from litellm.constants import (
     DEFAULT_REPLICATE_POLLING_RETRIES,
     DEFAULT_REPLICATE_POLLING_DELAY_SECONDS,
     LITELLM_CHAT_PROVIDERS,
+    HUMANLOOP_PROMPT_CACHE_TTL_SECONDS,
+    OPENAI_CHAT_COMPLETION_PARAMS,
 )
 from litellm.types.guardrails import GuardrailItem
 from litellm.proxy._types import (
@@ -34,6 +37,7 @@ from litellm.proxy._types import (
     LiteLLM_UpperboundKeyGenerateParams,
 )
 from litellm.types.utils import StandardKeyGenerationConfig, LlmProviders
+from litellm.integrations.custom_logger import CustomLogger
 import httpx
 import dotenv
 from enum import Enum
@@ -41,15 +45,15 @@ from enum import Enum
 litellm_mode = os.getenv("LITELLM_MODE", "DEV")  # "PRODUCTION", "DEV"
 if litellm_mode == "DEV":
     dotenv.load_dotenv()
-#############################################
+###############################################
 if set_verbose == True:
     _turn_on_debug()
-#############################################
-### Callbacks /Logging / Success / Failure Handlers ####
-input_callback: List[Union[str, Callable]] = []
-success_callback: List[Union[str, Callable]] = []
-failure_callback: List[Union[str, Callable]] = []
-service_callback: List[Union[str, Callable]] = []
+###############################################
+### Callbacks /Logging / Success / Failure Handlers #####
+input_callback: List[Union[str, Callable, CustomLogger]] = []
+success_callback: List[Union[str, Callable, CustomLogger]] = []
+failure_callback: List[Union[str, Callable, CustomLogger]] = []
+service_callback: List[Union[str, Callable, CustomLogger]] = []
 _custom_logger_compatible_callbacks_literal = Literal[
     "lago",
     "openmeter",
@@ -58,6 +62,7 @@ _custom_logger_compatible_callbacks_literal = Literal[
     "dynamic_rate_limiter",
     "langsmith",
     "prometheus",
+    "otel",
     "datadog",
     "datadog_llm_observability",
     "galileo",
@@ -70,24 +75,28 @@ _custom_logger_compatible_callbacks_literal = Literal[
     "argilla",
     "mlflow",
     "langfuse",
+    "pagerduty",
+    "humanloop",
 ]
 logged_real_time_event_types: Optional[Union[List[str], Literal["*"]]] = None
 _known_custom_logger_compatible_callbacks: List = list(
     get_args(_custom_logger_compatible_callbacks_literal)
 )
-callbacks: List[Union[Callable, _custom_logger_compatible_callbacks_literal]] = []
+callbacks: List[
+    Union[Callable, _custom_logger_compatible_callbacks_literal, CustomLogger]
+] = []
 langfuse_default_tags: Optional[List[str]] = None
 langsmith_batch_size: Optional[int] = None
 argilla_batch_size: Optional[int] = None
 datadog_use_v1: Optional[bool] = False  # if you want to use v1 datadog logged payload
 argilla_transformation_object: Optional[Dict[str, Any]] = None
-_async_input_callback: List[Callable] = (
+_async_input_callback: List[Union[str, Callable, CustomLogger]] = (
     []
 )  # internal variable - async custom callbacks are routed here.
-_async_success_callback: List[Union[str, Callable]] = (
+_async_success_callback: List[Union[str, Callable, CustomLogger]] = (
     []
 )  # internal variable - async custom callbacks are routed here.
-_async_failure_callback: List[Callable] = (
+_async_failure_callback: List[Union[str, Callable, CustomLogger]] = (
     []
 )  # internal variable - async custom callbacks are routed here.
 pre_call_rules: List[Callable] = []
@@ -96,6 +105,7 @@ turn_off_message_logging: Optional[bool] = False
 log_raw_request_response: bool = False
 redact_messages_in_exceptions: Optional[bool] = False
 redact_user_api_key_info: Optional[bool] = False
+filter_invalid_headers: Optional[bool] = False
 add_user_information_to_llm_headers: Optional[bool] = (
     None  # adds user_id, team_id, token hash (params from StandardLoggingMetadata) to request headers
 )
@@ -123,6 +133,7 @@ azure_key: Optional[str] = None
 anthropic_key: Optional[str] = None
 replicate_key: Optional[str] = None
 cohere_key: Optional[str] = None
+infinity_key: Optional[str] = None
 clarifai_key: Optional[str] = None
 maritalk_key: Optional[str] = None
 ai21_key: Optional[str] = None
@@ -146,6 +157,7 @@ use_client: bool = False
 ssl_verify: Union[str, bool] = True
 ssl_certificate: Optional[str] = None
 disable_streaming_logging: bool = False
+disable_add_transform_inline_image_block: bool = False
 in_memory_llm_clients_cache: InMemoryCache = InMemoryCache()
 safe_memory_mode: bool = False
 enable_azure_ad_token_refresh: Optional[bool] = False
@@ -292,11 +304,13 @@ default_team_settings: Optional[List] = None
 max_user_budget: Optional[float] = None
 default_max_internal_user_budget: Optional[float] = None
 max_internal_user_budget: Optional[float] = None
+max_ui_session_budget: Optional[float] = 10  # $10 USD budgets for UI Chat sessions
 internal_user_budget_duration: Optional[str] = None
 tag_budget_config: Optional[Dict[str, BudgetConfig]] = None
 max_end_user_budget: Optional[float] = None
 disable_end_user_cost_tracking: Optional[bool] = None
 disable_end_user_cost_tracking_prometheus_only: Optional[bool] = None
+custom_prometheus_metadata_labels: List[str] = []
 #### REQUEST PRIORITIZATION ####
 priority_reservation: Optional[Dict[str, float]] = None
 #### RELIABILITY ####
@@ -413,6 +427,7 @@ BEDROCK_CONVERSE_MODELS = [
     "meta.llama3-1-405b-instruct-v1:0",
     "meta.llama3-70b-instruct-v1:0",
     "mistral.mistral-large-2407-v1:0",
+    "mistral.mistral-large-2402-v1:0",
     "meta.llama3-2-1b-instruct-v1:0",
     "meta.llama3-2-3b-instruct-v1:0",
     "meta.llama3-2-11b-instruct-v1:0",
@@ -464,17 +479,56 @@ friendliai_models: List = []
 palm_models: List = []
 groq_models: List = []
 azure_models: List = []
+azure_text_models: List = []
 anyscale_models: List = []
 cerebras_models: List = []
 galadriel_models: List = []
+sambanova_models: List = []
+
+
+def is_bedrock_pricing_only_model(key: str) -> bool:
+    """
+    Excludes keys with the pattern 'bedrock/<region>/<model>'. These are in the model_prices_and_context_window.json file for pricing purposes only.
+
+    Args:
+        key (str): A key to filter.
+
+    Returns:
+        bool: True if the key matches the Bedrock pattern, False otherwise.
+    """
+    # Regex to match 'bedrock/<region>/<model>'
+    bedrock_pattern = re.compile(r"^bedrock/[a-zA-Z0-9_-]+/.+$")
+
+    if "month-commitment" in key:
+        return True
+
+    is_match = bedrock_pattern.match(key)
+    return is_match is not None
+
+
+def is_openai_finetune_model(key: str) -> bool:
+    """
+    Excludes model cost keys with the pattern 'ft:<model>'. These are in the model_prices_and_context_window.json file for pricing purposes only.
+
+    Args:
+        key (str): A key to filter.
+
+    Returns:
+        bool: True if the key matches the OpenAI finetune pattern, False otherwise.
+    """
+    return key.startswith("ft:") and not key.count(":") > 1
 
 
 def add_known_models():
     for key, value in model_cost.items():
-        if value.get("litellm_provider") == "openai":
+        if value.get("litellm_provider") == "openai" and not is_openai_finetune_model(
+            key
+        ):
             open_ai_chat_completion_models.append(key)
         elif value.get("litellm_provider") == "text-completion-openai":
             open_ai_text_completion_models.append(key)
+        elif value.get("litellm_provider") == "azure_text":
+            azure_text_models.append(key)
         elif value.get("litellm_provider") == "cohere":
             cohere_models.append(key)
         elif value.get("litellm_provider") == "cohere_chat":
@@ -525,7 +579,9 @@ def add_known_models():
             nlp_cloud_models.append(key)
         elif value.get("litellm_provider") == "aleph_alpha":
             aleph_alpha_models.append(key)
-        elif value.get("litellm_provider") == "bedrock":
+        elif value.get(
+            "litellm_provider"
+        ) == "bedrock" and not is_bedrock_pricing_only_model(key):
             bedrock_models.append(key)
         elif value.get("litellm_provider") == "bedrock_converse":
             bedrock_converse_models.append(key)
@@ -575,6 +631,8 @@ def add_known_models():
             cerebras_models.append(key)
         elif value.get("litellm_provider") == "galadriel":
             galadriel_models.append(key)
+        elif value.get("litellm_provider") == "sambanova_models":
+            sambanova_models.append(key)
 
 
 add_known_models()
@@ -591,7 +649,7 @@ openai_compatible_endpoints: List = [
     "api.deepseek.com/v1",
     "api.together.xyz/v1",
     "app.empower.dev/api/v1",
-    "inference.friendli.ai/v1",
+    "https://api.friendli.ai/serverless/v1",
     "api.sambanova.ai/v1",
     "api.x.ai/v1",
     "api.galadriel.ai/v1",
@@ -838,8 +896,11 @@ model_list = (
     + anyscale_models
     + cerebras_models
     + galadriel_models
+    + sambanova_models
+    + azure_text_models
 )
 
+model_list_set = set(model_list)
 
 provider_list: List[Union[LlmProviders, str]] = list(LlmProviders)
 
@@ -884,10 +945,12 @@ models_by_provider: dict = {
     "friendliai": friendliai_models,
     "palm": palm_models,
     "groq": groq_models,
-    "azure": azure_models,
+    "azure": azure_models + azure_text_models,
+    "azure_text": azure_text_models,
     "anyscale": anyscale_models,
     "cerebras": cerebras_models,
     "galadriel": galadriel_models,
+    "sambanova": sambanova_models,
 }
 
 # mapping for those models which have larger equivalents
@@ -976,6 +1039,7 @@ from .utils import (
     get_api_base,
     get_first_chars_messages,
     ModelResponse,
+    ModelResponseStream,
     EmbeddingResponse,
     ImageResponse,
     TranscriptionResponse,
@@ -993,7 +1057,9 @@ ALL_LITELLM_RESPONSE_TYPES = [
 ]
 
 from .llms.custom_llm import CustomLLM
+from .llms.bedrock.chat.converse_transformation import AmazonConverseConfig
 from .llms.openai_like.chat.handler import OpenAILikeChatConfig
+from .llms.aiohttp_openai.chat.transformation import AiohttpOpenAIChatConfig
 from .llms.galadriel.chat.transformation import GaladrielChatConfig
 from .llms.github.chat.transformation import GithubChatConfig
 from .llms.empower.chat.transformation import EmpowerChatConfig
@@ -1010,14 +1076,21 @@ from .llms.anthropic.experimental_pass_through.transformation import (
 from .llms.groq.stt.transformation import GroqSTTConfig
 from .llms.anthropic.completion.transformation import AnthropicTextConfig
 from .llms.triton.completion.transformation import TritonConfig
+from .llms.triton.completion.transformation import TritonGenerateConfig
+from .llms.triton.completion.transformation import TritonInferConfig
+from .llms.triton.embedding.transformation import TritonEmbeddingConfig
 from .llms.databricks.chat.transformation import DatabricksConfig
 from .llms.databricks.embed.transformation import DatabricksEmbeddingConfig
 from .llms.predibase.chat.transformation import PredibaseConfig
 from .llms.replicate.chat.transformation import ReplicateConfig
 from .llms.cohere.completion.transformation import CohereTextConfig as CohereConfig
+from .llms.cohere.rerank.transformation import CohereRerankConfig
+from .llms.azure_ai.rerank.transformation import AzureAIRerankConfig
+from .llms.infinity.rerank.transformation import InfinityRerankConfig
 from .llms.clarifai.chat.transformation import ClarifaiConfig
 from .llms.ai21.chat.transformation import AI21ChatConfig, AI21ChatConfig as AI21Config
 from .llms.together_ai.chat import TogetherAIConfig
+from .llms.together_ai.completion.transformation import TogetherAITextCompletionConfig
 from .llms.cloudflare.chat.transformation import CloudflareChatConfig
 from .llms.deprecated_providers.palm import (
     PalmConfig,
@@ -1027,9 +1100,11 @@ from .llms.petals.completion.transformation import PetalsConfig
 from .llms.deprecated_providers.aleph_alpha import AlephAlphaConfig
 from .llms.vertex_ai.gemini.vertex_and_google_ai_studio_gemini import (
     VertexGeminiConfig,
+    VertexGeminiConfig as VertexAIConfig,
+)
+from .llms.gemini.chat.transformation import (
     GoogleAIStudioGeminiConfig,
-    VertexAIConfig,
-    GoogleAIStudioGeminiConfig as GeminiConfig,
+    GoogleAIStudioGeminiConfig as GeminiConfig,  # aliased to maintain backwards compatibility
 )
 
 
@@ -1055,9 +1130,9 @@ from .llms.sagemaker.chat.transformation import SagemakerChatConfig
 from .llms.ollama_chat import OllamaChatConfig
 from .llms.bedrock.chat.invoke_handler import (
     AmazonCohereChatConfig,
-    AmazonConverseConfig,
     bedrock_tool_name_mappings,
 )
+
 from .llms.bedrock.common_utils import (
     AmazonTitanConfig,
     AmazonAI21Config,
@@ -1080,9 +1155,16 @@ from .llms.bedrock.embed.amazon_titan_v2_transformation import (
 from .llms.cohere.chat.transformation import CohereChatConfig
 from .llms.bedrock.embed.cohere_transformation import BedrockCohereEmbeddingConfig
 from .llms.openai.openai import OpenAIConfig, MistralEmbeddingConfig
+from .llms.openai.image_variations.transformation import OpenAIImageVariationConfig
 from .llms.deepinfra.chat.transformation import DeepInfraConfig
+from .llms.deepgram.audio_transcription.transformation import (
+    DeepgramAudioTranscriptionConfig,
+)
+from .llms.topaz.common_utils import TopazModelInfo
+from .llms.topaz.image_variations.transformation import TopazImageVariationConfig
 from litellm.llms.openai.completion.transformation import OpenAITextCompletionConfig
 from .llms.groq.chat.transformation import GroqChatConfig
+from .llms.voyage.embedding.transformation import VoyageEmbeddingConfig
 from .llms.azure_ai.chat.transformation import AzureAIStudioConfig
 from .llms.mistral.mistral_chat_transformation import MistralConfig
 from .llms.openai.chat.o1_transformation import (
@@ -1111,6 +1193,10 @@ from .llms.cerebras.chat import CerebrasConfig
 from .llms.sambanova.chat import SambanovaConfig
 from .llms.ai21.chat.transformation import AI21ChatConfig
 from .llms.fireworks_ai.chat.transformation import FireworksAIConfig
+from .llms.fireworks_ai.completion.transformation import FireworksAITextCompletionConfig
+from .llms.fireworks_ai.audio_transcription.transformation import (
+    FireworksAIAudioTranscriptionConfig,
+)
 from .llms.fireworks_ai.embed.fireworks_ai_transformation import (
     FireworksAIEmbeddingConfig,
 )
@@ -1127,6 +1213,7 @@ from .llms.azure.azure import (
 from .llms.azure.chat.gpt_transformation import AzureOpenAIConfig
 from .llms.azure.completion.transformation import AzureOpenAITextConfig
 from .llms.hosted_vllm.chat.transformation import HostedVLLMChatConfig
+from .llms.litellm_proxy.chat.transformation import LiteLLMProxyChatConfig
 from .llms.vllm.completion.transformation import VLLMConfig
 from .llms.deepseek.chat.transformation import DeepSeekChatConfig
 from .llms.lm_studio.chat.transformation import LMStudioChatConfig
@@ -1135,6 +1222,7 @@ from .llms.perplexity.chat.transformation import PerplexityChatConfig
 from .llms.azure.chat.o1_transformation import AzureOpenAIO1Config
 from .llms.watsonx.completion.transformation import IBMWatsonXAIConfig
 from .llms.watsonx.chat.transformation import IBMWatsonXChatConfig
+from .llms.watsonx.embed.transformation import IBMWatsonXEmbeddingConfig
 from .main import *  # type: ignore
 from .integrations import *
 from .exceptions import (

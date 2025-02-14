@@ -68,3 +68,7 @@ litellm_venv/*
 litellm/proxy/google-cloud-sdk/*
 budlitellm/*
 tests/llm_translation/log.txt
+venv/
+tests/local_testing/log.txt
+
+.codegpt

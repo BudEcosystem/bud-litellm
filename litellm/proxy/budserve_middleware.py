@@ -2,6 +2,8 @@ import json
 import httpx
 import os
 
+from litellm.commons.config import app_settings, secrets_settings
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from litellm._logging import verbose_proxy_logger
 from litellm.proxy.auth.auth_utils import get_request_route
@@ -21,7 +23,21 @@ class BudServeMiddleware(BaseHTTPMiddleware):
 
     async def get_api_key(self, request):
         authorization_header = request.headers.get("Authorization")
-        api_key = authorization_header.split(" ")[1]
+        x_api_key_header = request.headers.get("X-Api-Key")
+        api_key_header = request.headers.get("Api-Key")
+        if not authorization_header and not x_api_key_header and not api_key_header:
+            raise ProxyException(
+                message="Authorization/X-Api-Key/Api-Key header is missing",
+                type="unauthorized",
+                param="Authorization",
+                code=401
+            )
+        if authorization_header:
+            api_key = authorization_header.split(" ")[1]
+        elif x_api_key_header:
+            api_key = x_api_key_header
+        elif api_key_header:
+            api_key = api_key_header
         return api_key
     
     async def fetch_user_config(self, api_key: str, endpoint_name: str):
@@ -83,53 +99,67 @@ class BudServeMiddleware(BaseHTTPMiddleware):
 
         # get the request body
         request_data = await _read_request_body(request=request)
+        request.state.original_body = json.dumps(request_data)
         api_key = await self.get_api_key(request)
         endpoint_name = request_data.get("model")
 
         # get endpoint details to fill cache_params
         user_config = await self.fetch_user_config(api_key, endpoint_name)
         
+        user_config["cache_configuration"] = {
+            "score_threshold": 0.5,
+            "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+            "eviction_policy": "LRU",
+            "max_size": 1000,
+            "ttl": None
+        }
+        
+        request_data["metadata"] = {
+            "project_id": user_config.get("project_id"),
+            "project_name": user_config.get("project_name"),
+        }
+        
         # redis connection params we will set as kubernetes env variables
         # can be fetched using os.getenv
         request_data["user_config"] = {
             "cache_responses": False if not user_config.get("cache_configuration") else True,
-            "redis_host": os.getenv("REDIS_HOST", "localhost"),
-            "redis_port": os.getenv("REDIS_PORT", 6379),
-            "redis_password": os.getenv("REDIS_PASSWORD", ""),
+            "redis_host": app_settings.redis_host,
+            "redis_port": app_settings.redis_port,
+            "redis_password": secrets_settings.redis_password,
             "endpoint_cache_settings": {
                 "cache": False if not user_config.get("cache_configuration") else True,
                 "type": "gpt_cache_redis",  # redis-semantic
                 "cache_params": {
-                    "host": os.getenv("REDIS_HOST", "localhost"),
-                    "port": os.getenv("REDIS_PORT", 6379),
-                    "password": os.getenv("REDIS_PASSWORD", ""),
+                    "host": app_settings.cache_redis_host,
+                    "port": app_settings.cache_redis_port,
+                    "password": secrets_settings.cache_redis_password,
                     "similarity_threshold": user_config  \
                         .get("cache_configuration", {})  \
                         .get("score_threshold") 
                         if user_config.get("cache_configuration") 
-                        else os.getenv("CACHE_SCORE_THRESHOLD"),
+                        else app_settings.cache_score_threshold,
                     "redis_semantic_cache_use_async": False,
                     "redis_semantic_cache_embedding_model": user_config  \
                         .get("cache_configuration", {})  \
                         .get("embedding_model") 
                         if user_config.get("cache_configuration") 
-                        else os.getenv("CACHE_EMBEDDING_MODEL"),
+                        else app_settings.cache_embedding_model,
                     "eviction_policy": {
                         "policy": user_config  \
                             .get("cache_configuration", {})  \
                             .get("eviction_policy")
                             if user_config.get("cache_configuration")
-                            else os.getenv("CACHE_EVICTION_POLICY"),
+                            else app_settings.cache_eviction_policy,
                         "max_size": user_config  \
                             .get("cache_configuration", {})  \
                             .get("max_size")
                             if user_config.get("cache_configuration")
-                            else os.getenv("CACHE_MAX_SIZE"),
+                            else app_settings.cache_max_size,
                         "ttl": user_config  \
                             .get("cache_configuration", {})  \
                             .get("ttl")
                             if user_config.get("cache_configuration")
-                            else os.getenv("CACHE_TTL")
+                            else app_settings.cache_ttl,
                     },
                 },
             },

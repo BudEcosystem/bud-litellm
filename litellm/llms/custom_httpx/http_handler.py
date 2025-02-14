@@ -1,19 +1,22 @@
 import asyncio
 import os
-import traceback
 from typing import TYPE_CHECKING, Any, Callable, List, Mapping, Optional, Union
 
 import httpx
 from httpx import USE_CLIENT_DEFAULT, AsyncHTTPTransport, HTTPTransport
 
 import litellm
-from litellm.caching import InMemoryCache
+from litellm.litellm_core_utils.logging_utils import track_llm_api_timing
 from litellm.types.llms.custom_http import *
 
 if TYPE_CHECKING:
     from litellm import LlmProviders
+    from litellm.litellm_core_utils.litellm_logging import (
+        Logging as LiteLLMLoggingObject,
+    )
 else:
     LlmProviders = Any
+    LiteLLMLoggingObject = Any
 
 try:
     from litellm._version import version
@@ -27,8 +30,6 @@ headers = {
 # https://www.python-httpx.org/advanced/timeouts
 _DEFAULT_TIMEOUT = httpx.Timeout(timeout=5.0, connect=5.0)
 _DEFAULT_TTL_FOR_HTTPX_CLIENTS = 3600  # 1 hour, re-use the same httpx client for 1 hour
-
-import re
 
 
 def mask_sensitive_info(error_message):
@@ -160,6 +161,7 @@ class AsyncHTTPHandler:
         )
         return response
 
+    @track_llm_api_timing()
     async def post(
         self,
         url: str,
@@ -169,6 +171,7 @@ class AsyncHTTPHandler:
         headers: Optional[dict] = None,
         timeout: Optional[Union[float, httpx.Timeout]] = None,
         stream: bool = False,
+        logging_obj: Optional[LiteLLMLoggingObject] = None,
     ):
         try:
             if timeout is None:
@@ -491,21 +494,23 @@ class HTTPHandler:
         self,
         url: str,
         data: Optional[Union[dict, str]] = None,
-        json: Optional[Union[dict, str]] = None,
+        json: Optional[Union[dict, str, List]] = None,
         params: Optional[dict] = None,
         headers: Optional[dict] = None,
         stream: bool = False,
         timeout: Optional[Union[float, httpx.Timeout]] = None,
+        files: Optional[dict] = None,
+        content: Any = None,
+        logging_obj: Optional[LiteLLMLoggingObject] = None,
     ):
         try:
-
             if timeout is not None:
                 req = self.client.build_request(
-                    "POST", url, data=data, json=json, params=params, headers=headers, timeout=timeout  # type: ignore
+                    "POST", url, data=data, json=json, params=params, headers=headers, timeout=timeout, files=files, content=content  # type: ignore
                 )
             else:
                 req = self.client.build_request(
-                    "POST", url, data=data, json=json, params=params, headers=headers  # type: ignore
+                    "POST", url, data=data, json=json, params=params, headers=headers, files=files, content=content  # type: ignore
                 )
             response = self.client.send(req, stream=stream)
             response.raise_for_status()
@@ -517,7 +522,6 @@ class HTTPHandler:
                 llm_provider="litellm-httpx-handler",
             )
         except httpx.HTTPStatusError as e:
-
             if stream is True:
                 setattr(e, "message", mask_sensitive_info(e.response.read()))
                 setattr(e, "text", mask_sensitive_info(e.response.read()))
