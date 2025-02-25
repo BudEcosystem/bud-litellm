@@ -65,6 +65,17 @@ class CredentialUpdatePayload(BaseModel):
 
 class CredentialUpdateRequest(CloudEventBase):
     payload: CredentialUpdatePayload
+    
+    
+class InferenceQualityScoreRequest(CloudEventBase):
+    request_id: UUID
+    scoring_tool: str = 'LLMGuardScorer'
+    project_id: Optional[UUID] = None
+    model_id: Optional[UUID] = None
+    endpoint_id: Optional[UUID] = None
+    prompt: str
+    response: str
+    
 # This file includes the custom callbacks for LiteLLM Proxy
 # Once defined, these can be passed in proxy_config.yaml
 class MyCustomHandler(CustomLogger):
@@ -96,6 +107,7 @@ class MyCustomHandler(CustomLogger):
             "exception": str(kwargs.get("exception", None)),
             "traceback": kwargs.get("traceback_exception", None) 
         }
+        response_str = response_body.get("choices", [{}])[0].get("message", {}).get("content", "") if not failure else ""
         # Access litellm_params passed to litellm.completion(), example access `metadata`
         litellm_params = kwargs.get("litellm_params", {})
         proxy_server_request = litellm_params.get("proxy_server_request", {})
@@ -108,6 +120,16 @@ class MyCustomHandler(CustomLogger):
                 "messages": kwargs.get("messages", []),
                 "stream": kwargs.get("stream", False)
             }
+        prompt_str = ""
+        for message in proxy_server_request["body"].get("messages", []):
+            if "content" in message:
+                if prompt_str:
+                    prompt_str += " "
+                # check if message["content"] is a list
+                if isinstance(message["content"], list):
+                    message["content"] = " ".join(content_item["text"] for content_item in message["content"] if "text" in content_item)
+                prompt_str += message["content"]
+        
         model_info = copy.deepcopy(litellm_params.get("model_info", {}))
         metadata = litellm_params.get("metadata", {})
         endpoint = metadata.get("endpoint", "")
@@ -162,8 +184,17 @@ class MyCustomHandler(CustomLogger):
             is_streaming=kwargs.get("stream", False),
             is_success=not failure,
         )
+        
+        inference_quality_score_request = InferenceQualityScoreRequest(
+            request_id=metrics_data.request_id,
+            project_id=metrics_data.project_id,
+            model_id=metrics_data.model_id,
+            endpoint_id=metrics_data.endpoint_id,
+            prompt=prompt_str,
+            response=response_str
+        )
         # verbose_logger.info(f"\n\nMetrics Data: {metrics_data}\n\n")
-        return metrics_data
+        return metrics_data, inference_quality_score_request
 
     def get_credential_update_request(self, kwargs, response_obj, start_time, end_time) -> CredentialUpdateRequest:
         litellm_params = kwargs.get("litellm_params", {})
@@ -178,7 +209,7 @@ class MyCustomHandler(CustomLogger):
 
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         verbose_logger.info("On Async Success!")
-        metrics_data = self.get_request_metrics(kwargs, response_obj, start_time, end_time)
+        metrics_data, inference_quality_score_request = self.get_request_metrics(kwargs, response_obj, start_time, end_time)
         metrics_data_json = metrics_data.model_dump(mode="json")
         # verbose_logger.info(f"Metrics Data JSON: {metrics_data_json}")
         with DaprService() as dapr_service:
@@ -188,6 +219,13 @@ class MyCustomHandler(CustomLogger):
                 target_topic_name=app_settings.budmetrics_topic_name,
                 target_name=app_settings.budmetrics_app_name,
                 event_type="add_request_metrics",
+            )
+            dapr_service.publish_to_topic(
+                data=inference_quality_score_request.model_dump(mode="json"),
+                pubsub_name="pubsub-redis",
+                target_topic_name=app_settings.budmetrics_topic_name,
+                target_name=app_settings.budmetrics_app_name,
+                event_type="add_request_scores",
             )
         credential_update_request = self.get_credential_update_request(kwargs, response_obj, start_time, end_time)
         # verbose_logger.info(f"Credential Update Request: {credential_update_request}")
@@ -205,7 +243,7 @@ class MyCustomHandler(CustomLogger):
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time): 
         try:
             verbose_logger.info("On Async Failure !")
-            metrics_data = self.get_request_metrics(kwargs, response_obj, start_time, end_time, failure=True)
+            metrics_data, inference_quality_score_request = self.get_request_metrics(kwargs, response_obj, start_time, end_time, failure=True)
             metrics_data_json = metrics_data.model_dump(mode="json")
             # verbose_logger.info(f"Metrics Data JSON: {metrics_data_json}")
             with DaprService() as dapr_service:
@@ -215,6 +253,13 @@ class MyCustomHandler(CustomLogger):
                     target_topic_name=app_settings.budmetrics_topic_name,
                     target_name=app_settings.budmetrics_app_name,
                     event_type="add_request_metrics",
+                )
+                dapr_service.publish_to_topic(
+                    data=inference_quality_score_request.model_dump(mode="json"),
+                    pubsub_name="pubsub-redis",
+                    target_topic_name=app_settings.budmetrics_topic_name,
+                    target_name=app_settings.budmetrics_app_name,
+                    event_type="add_request_scores",
                 )
         except Exception as e:
             # TODO: what metrics data to log here?
