@@ -211,7 +211,7 @@ class MyCustomHandler(CustomLogger):
         verbose_logger.info("On Async Success!")
         metrics_data, inference_quality_score_request = self.get_request_metrics(kwargs, response_obj, start_time, end_time)
         metrics_data_json = metrics_data.model_dump(mode="json")
-        # verbose_logger.info(f"Metrics Data JSON: {metrics_data_json}")
+        verbose_logger.info(f"Metrics Data JSON: {inference_quality_score_request}")
         with DaprService() as dapr_service:
             dapr_service.publish_to_topic(
                 data=metrics_data_json,
