@@ -106,13 +106,13 @@ class BudServeMiddleware(BaseHTTPMiddleware):
         # get endpoint details to fill cache_params
         user_config = await self.fetch_user_config(api_key, endpoint_name)
         
-        # user_config["cache_configuration"] = {
-        #     "score_threshold": 0.5,
-        #     "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
-        #     "eviction_policy": "LRU",
-        #     "max_size": 1000,
-        #     "ttl": None
-        # }
+        user_config["cache_configuration"] = {
+            "score_threshold": 0.5,
+            "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+            "eviction_policy": "LRU",
+            "max_size": 1000,
+            "ttl": None
+        }
         
         request_data["metadata"] = {
             "project_id": user_config.get("project_id"),
