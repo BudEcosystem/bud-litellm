@@ -70,6 +70,7 @@ class CredentialUpdateRequest(CloudEventBase):
 class InferenceQualityScoreRequest(CloudEventBase):
     request_id: UUID
     scoring_tool: str = 'LLMGuardScorer'
+    is_success: bool
     project_id: Optional[UUID] = None
     model_id: Optional[UUID] = None
     endpoint_id: Optional[UUID] = None
@@ -188,6 +189,7 @@ class MyCustomHandler(CustomLogger):
         
         inference_quality_score_request = InferenceQualityScoreRequest(
             request_id=metrics_data.request_id,
+            is_success=metrics_data.is_success,
             project_id=metrics_data.project_id,
             model_id=metrics_data.model_id,
             endpoint_id=metrics_data.endpoint_id,
