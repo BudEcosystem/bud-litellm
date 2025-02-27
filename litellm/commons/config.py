@@ -69,7 +69,7 @@ class AppConfig(BaseAppConfig):
     budapp_topic_name: str = Field("budAppMessages", alias="BUDAPP_TOPIC_NAME")
 
     #origins
-    cors_origins: list = Field(default_factory=lambda: ["http://localhost:3000"], alias="CORS_ORIGINS")
+    cors_origins: str = Field("http://localhost:3000", alias="CORS_ORIGINS")
     
 
 class SecretsConfig(BaseSecretsConfig):
