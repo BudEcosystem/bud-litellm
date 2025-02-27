@@ -9,7 +9,7 @@ from litellm._logging import verbose_proxy_logger
 from litellm.proxy.auth.auth_utils import get_request_route
 from litellm.proxy.common_utils.http_parsing_utils import _read_request_body
 from litellm.proxy._types import ProxyException
-
+from fastapi.responses import JSONResponse
 
 class BudServeMiddleware(BaseHTTPMiddleware):
     llm_request_list = [
@@ -88,6 +88,26 @@ class BudServeMiddleware(BaseHTTPMiddleware):
         3. Create user_config using model_configuration (endpoint model) and router_config (project model)
         4. Add validations for fallbacks
         """
+        if request.method == "OPTIONS":
+            origin = request.headers.get("Origin")  # Get the request's Origin header
+            allowed_origins = app_settings.origins if isinstance(app_settings.origins, list) else []
+
+            # Check if the request origin is in the allowed list
+            if origin in allowed_origins:
+                allow_origin = origin  # Allow only the matching origin
+            else:
+                allow_origin = "null"  # Block if origin is not in the allowed list
+
+            return JSONResponse(
+                content={"message": "CORS preflight request successful."},
+                status_code=200,
+                headers={
+                    "Access-Control-Allow-Origin": allow_origin,
+                    "Access-Control-Allow-Methods": "*",
+                    "Access-Control-Allow-Headers": "Authorization, Content-Type, *",
+                    "Access-Control-Allow-Credentials": "true"
+                }
+            )
         route: str = get_request_route(request=request)
         verbose_proxy_logger.info(f"Request: {route}")
         run_through_middleware = any(

@@ -67,6 +67,9 @@ class AppConfig(BaseAppConfig):
     # BudApp Credential Update
     budapp_app_name: str = Field("budApp", alias="BUDAPP_APP_NAME")
     budapp_topic_name: str = Field("budAppMessages", alias="BUDAPP_TOPIC_NAME")
+
+    #origins
+    origins: list = Field(default_factory=lambda: ["http://localhost:3000"], alias="ORIGINS")
     
 
 class SecretsConfig(BaseSecretsConfig):

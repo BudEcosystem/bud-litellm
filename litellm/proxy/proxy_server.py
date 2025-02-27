@@ -677,7 +677,6 @@ async def openai_exception_handler(request: Request, exc: ProxyException):
 
 
 router = APIRouter()
-origins = ["*"]
 
 # get current directory
 try:
@@ -715,7 +714,7 @@ except Exception:
     pass
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=app_settings.origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
