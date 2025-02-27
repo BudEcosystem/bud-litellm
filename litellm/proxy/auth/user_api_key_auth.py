@@ -17,6 +17,8 @@ from fastapi import HTTPException, Request, WebSocket, status
 from fastapi.security.api_key import APIKeyHeader
 
 import litellm
+from litellm.commons.config import app_settings
+from litellm.proxy.budserve_middleware import _get_user_jwt, _get_project_id
 from litellm._logging import verbose_logger, verbose_proxy_logger
 from litellm._service_logger import ServiceLogging
 from litellm.caching import DualCache
@@ -520,6 +522,12 @@ async def _user_api_key_auth_builder(  # noqa: PLR0915
                 ),
                 kind=open_telemetry_logger.span_kind.SERVER,
             )
+
+        ### IF USER JWT AND PROJECT ID ARE PASSED IN, BYPASS WITH MASTER KEY ###
+        user_jwt = await _get_user_jwt(request)
+        project_id = await _get_project_id(request)
+        if user_jwt and project_id:
+            return UserAPIKeyAuth(api_key=app_settings.litellm_master_key)
 
         ### USER-DEFINED AUTH FUNCTION ###
         if user_custom_auth is not None:

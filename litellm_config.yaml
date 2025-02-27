@@ -1,6 +1,7 @@
 general_settings:
   store_model_in_db: True
   custom_auth: litellm.custom_auth.user_api_key_auth
+  master_key: "os.environ/LITELLM_MASTER_KEY"
 router_settings:
   cache_responses: False
   redis_host: "os.environ/REDIS_HOST"

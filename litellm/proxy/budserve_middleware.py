@@ -2,8 +2,11 @@ import json
 import httpx
 import os
 
+from typing import Optional
+
 from litellm.commons.config import app_settings, secrets_settings
 
+from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from litellm._logging import verbose_proxy_logger
 from litellm.proxy.auth.auth_utils import get_request_route
@@ -39,17 +42,30 @@ class BudServeMiddleware(BaseHTTPMiddleware):
         elif api_key_header:
             api_key = api_key_header
         return api_key
-    
-    async def fetch_user_config(self, api_key: str, endpoint_name: str):
+
+    async def fetch_user_config(self, api_key: Optional[str], endpoint_name: str, user_jwt: Optional[str], project_id: Optional[str]):
         # redis key : router_config:{api_key}:{endpoint_name}
         budserve_app_baseurl = os.getenv('BUDSERVE_APP_BASEURL', 'http://localhost:9000')
         url = f"{budserve_app_baseurl}/credentials/router-config"
+
+        # Build params
+        params={"endpoint_name": endpoint_name}
+        if api_key:
+            params["api_key"] = api_key
+        if project_id:
+            params["project_id"] = project_id
+
+        # Build headers
+        headers={"Content-Type": "application/json"}
+        if user_jwt:
+            headers["Authorization"] = f"Bearer {user_jwt}"
+
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
                     url,
-                    params={"api_key": api_key, "endpoint_name": endpoint_name},
-                    headers={"Content-Type": "application/json"},
+                    params=params,
+                    headers=headers,
                     follow_redirects=True
                 )
                 verbose_proxy_logger.debug(f"Response: {response}")
@@ -102,9 +118,14 @@ class BudServeMiddleware(BaseHTTPMiddleware):
         request.state.original_body = json.dumps(request_data)
         api_key = await self.get_api_key(request)
         endpoint_name = request_data.get("model")
+        user_jwt = await _get_user_jwt(request)
+        project_id = await _get_project_id(request)
+        # if user_jwt is present, api_key change to None
+        if user_jwt:
+            api_key = None
 
         # get endpoint details to fill cache_params
-        user_config = await self.fetch_user_config(api_key, endpoint_name)
+        user_config = await self.fetch_user_config(api_key, endpoint_name, user_jwt, project_id)
         
         user_config["cache_configuration"] = {
             "score_threshold": 0.5,
@@ -167,3 +188,21 @@ class BudServeMiddleware(BaseHTTPMiddleware):
         }
         request._body = json.dumps(request_data).encode("utf-8")
         return await call_next(request)
+
+
+async def _get_user_jwt(request: Request):
+    """Get the user jwt from the request headers"""
+    authorization_header = request.headers.get("Authorization")
+    if authorization_header:
+        auth_token = authorization_header.split(" ")[1]
+
+        if auth_token and isinstance(auth_token, str):
+            auth_token_len = auth_token.split(".")
+            if len(auth_token_len) == 3:
+                return auth_token
+
+    return None
+
+async def _get_project_id(request: Request):
+    """Get the project id from the request headers"""
+    return request.headers.get("Project-Id")
