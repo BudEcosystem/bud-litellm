@@ -8,3 +8,4 @@ router_settings:
   redis_password: "os.environ/REDIS_PASSWORD"
 litellm_settings:
   callbacks: litellm.custom_callbacks.proxy_handler_instance # sets litellm.callbacks = [proxy_handler_instance]
+  drop_params: true
