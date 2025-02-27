@@ -90,7 +90,7 @@ class BudServeMiddleware(BaseHTTPMiddleware):
         """
         if request.method == "OPTIONS":
             origin = request.headers.get("Origin")  # Get the request's Origin header
-            allowed_origins = app_settings.origins if isinstance(app_settings.origins, list) else []
+            allowed_origins = app_settings.cors_origins if isinstance(app_settings.cors_origins, list) else []
 
             # Check if the request origin is in the allowed list
             if origin in allowed_origins:
