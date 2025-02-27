@@ -17,13 +17,20 @@
 """Manages application and secret configurations, utilizing environment variables and Dapr's configuration store for syncing."""
 
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, Any, List, Optional
 
 from budmicroframe.commons.config import BaseAppConfig, BaseSecretsConfig, register_settings, enable_periodic_sync_from_store
-from pydantic import DirectoryPath, Field
+from pydantic import DirectoryPath, Field, BeforeValidator
 
 from litellm.__about__ import __version__
 
+def parse_cors(v: Any) -> List[str] | str:
+    """Parse CORS_ORIGINS into a list of strings."""
+    if isinstance(v, str) and not v.startswith("["):
+        return [i.strip() for i in v.split(",")]
+    elif isinstance(v, list | str):
+        return v
+    raise ValueError(v)
 
 class AppConfig(BaseAppConfig):
     name: str = __version__.split("@")[0]
@@ -68,9 +75,8 @@ class AppConfig(BaseAppConfig):
     budapp_app_name: str = Field("budApp", alias="BUDAPP_APP_NAME")
     budapp_topic_name: str = Field("budAppMessages", alias="BUDAPP_TOPIC_NAME")
 
-    #origins
-    cors_origins: list = Field(default_factory=lambda: ["http://localhost:3000"], alias="CORS_ORIGINS")
-    
+    #CORS
+    cors_origins: Annotated[list[str] | str, BeforeValidator(parse_cors)] = []
 
 class SecretsConfig(BaseSecretsConfig):
     name: str = __version__.split("@")[0]
