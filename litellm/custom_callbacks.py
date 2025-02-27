@@ -75,6 +75,7 @@ class InferenceQualityScoreRequest(CloudEventBase):
     endpoint_id: Optional[UUID] = None
     prompt: str
     response: str
+    request_arrival_time: datetime
     
 # This file includes the custom callbacks for LiteLLM Proxy
 # Once defined, these can be passed in proxy_config.yaml
@@ -191,7 +192,8 @@ class MyCustomHandler(CustomLogger):
             model_id=metrics_data.model_id,
             endpoint_id=metrics_data.endpoint_id,
             prompt=prompt_str,
-            response=response_str
+            response=response_str,
+            request_arrival_time=metrics_data.request_arrival_time
         )
         # verbose_logger.info(f"\n\nMetrics Data: {metrics_data}\n\n")
         return metrics_data, inference_quality_score_request
