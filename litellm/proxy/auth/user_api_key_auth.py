@@ -18,7 +18,7 @@ from fastapi.security.api_key import APIKeyHeader
 
 import litellm
 from litellm.commons.config import app_settings
-from litellm.proxy.budserve_middleware import _get_user_jwt, _get_project_id
+from litellm.proxy.budserve_middleware import _get_user_jwt, _get_project_id, _get_project_id_from_body
 from litellm._logging import verbose_logger, verbose_proxy_logger
 from litellm._service_logger import ServiceLogging
 from litellm.caching import DualCache
@@ -525,7 +525,8 @@ async def _user_api_key_auth_builder(  # noqa: PLR0915
 
         ### IF USER JWT AND PROJECT ID ARE PASSED IN, BYPASS WITH MASTER KEY ###
         user_jwt = await _get_user_jwt(request)
-        project_id = await _get_project_id(request)
+        # project_id = await _get_project_id(request)
+        project_id = await _get_project_id_from_body(request_data)
         if user_jwt and project_id:
             return UserAPIKeyAuth(api_key=app_settings.litellm_master_key)
 

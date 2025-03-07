@@ -2,7 +2,7 @@ import json
 import httpx
 import os
 
-from typing import Optional
+from typing import Optional, Any
 
 from litellm.commons.config import app_settings, secrets_settings
 
@@ -139,7 +139,8 @@ class BudServeMiddleware(BaseHTTPMiddleware):
         api_key = await self.get_api_key(request)
         endpoint_name = request_data.get("model")
         user_jwt = await _get_user_jwt(request)
-        project_id = await _get_project_id(request)
+        # project_id = await _get_project_id(request)
+        project_id = await _get_project_id_from_body(request_data)
         # if user_jwt is present, api_key change to None
         if user_jwt:
             api_key = None
@@ -226,3 +227,7 @@ async def _get_user_jwt(request: Request):
 async def _get_project_id(request: Request):
     """Get the project id from the request headers"""
     return request.headers.get("Project-Id")
+
+async def _get_project_id_from_body(request_data: dict[str, Any]):
+    """Get the project id from the request headers"""
+    return request_data.get("metadata", {}).get("project_id")
