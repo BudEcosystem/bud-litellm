@@ -514,6 +514,9 @@ class OpenAIChatCompletion(BaseLLM):
                 fake_stream = provider_config.should_fake_stream(
                     model=model, custom_llm_provider=custom_llm_provider, stream=stream
                 )
+            
+            fake_stream = False
+            verbose_logger.debug("fake_stream: %s", fake_stream)
 
             if headers:
                 inference_params["extra_headers"] = headers
