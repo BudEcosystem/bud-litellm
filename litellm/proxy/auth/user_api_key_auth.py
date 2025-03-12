@@ -526,7 +526,7 @@ async def _user_api_key_auth_builder(  # noqa: PLR0915
         ### IF USER JWT AND PROJECT ID ARE PASSED IN, BYPASS WITH MASTER KEY ###
         user_jwt = await _get_user_jwt(request)
         # project_id = await _get_project_id(request)
-        project_id = await _get_project_id_from_body(request_data)
+        project_id = await _get_project_id(request_data)
         if user_jwt and project_id:
             return UserAPIKeyAuth(api_key=app_settings.litellm_master_key)
 

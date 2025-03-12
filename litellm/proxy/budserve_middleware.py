@@ -42,6 +42,9 @@ class BudServeMiddleware(BaseHTTPMiddleware):
         elif api_key_header:
             api_key = api_key_header
         return api_key
+    
+    async def extract_cache_preference(self, request):
+        return request.headers.get("Cache-Preference", 'false').lower() == 'true'
 
     async def fetch_user_config(self, api_key: Optional[str], endpoint_name: str, user_jwt: Optional[str], project_id: Optional[str]):
         # redis key : router_config:{api_key}:{endpoint_name}
@@ -136,11 +139,12 @@ class BudServeMiddleware(BaseHTTPMiddleware):
         # get the request body
         request_data = await _read_request_body(request=request)
         request.state.original_body = json.dumps(request_data)
+        enable_cache = await self.extract_cache_preference(request)
         api_key = await self.get_api_key(request)
         endpoint_name = request_data.get("model")
         user_jwt = await _get_user_jwt(request)
         # project_id = await _get_project_id(request)
-        project_id = await _get_project_id_from_body(request_data)
+        project_id = await _get_project_id(request_data)
         # if user_jwt is present, api_key change to None
         if user_jwt:
             api_key = None
@@ -148,13 +152,14 @@ class BudServeMiddleware(BaseHTTPMiddleware):
         # get endpoint details to fill cache_params
         user_config = await self.fetch_user_config(api_key, endpoint_name, user_jwt, project_id)
         
-        user_config["cache_configuration"] = {
-            "score_threshold": 0.5,
-            "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
-            "eviction_policy": "LRU",
-            "max_size": 1000,
-            "ttl": None
-        }
+        if enable_cache:
+            user_config["cache_configuration"] = {
+                "score_threshold": 0.5,
+                "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+                "eviction_policy": "LRU",
+                "max_size": 1000,
+                "ttl": None
+            }
         
         request_data["metadata"] = {
             "project_id": user_config.get("project_id"),
