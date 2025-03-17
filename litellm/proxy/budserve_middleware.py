@@ -156,6 +156,18 @@ class BudServeMiddleware(BaseHTTPMiddleware):
             "ttl": None
         }
         
+        user_config["compress_configuration"] = {
+            "init_config": {
+                "model_name":"microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank",
+                "use_llmlingua2":True, # Whether to use llmlingua-2,
+                "device_map":'cpu'
+            },
+            "run_config": {
+                "rate":0.33, 
+                "force_tokens" : ['\n', '?']
+            }
+        }
+        
         request_data["metadata"] = {
             "project_id": user_config.get("project_id"),
             "project_name": user_config.get("project_name"),
@@ -204,6 +216,24 @@ class BudServeMiddleware(BaseHTTPMiddleware):
                             else app_settings.cache_ttl,
                     },
                 },
+            },
+            "compress_configuration":{
+                "is_enabled": app_settings.enable_compress if not user_config.get("compress_configuration") else True,
+                "init_config": {
+                    **{
+                    "model_name": app_settings.compression_model,
+                    "use_llmlingua2": app_settings.use_llmlingua2, # Whether to use llmlingua-2,
+                    "device_map": app_settings.compress_device_map
+                    },
+                    **user_config.get("compress_configuration",{}).get("init_config", {})
+                },
+                "run_config": {
+                    **{
+                    "rate":app_settings.compress_rate, 
+                    "force_tokens" : app_settings.force_tokens
+                    },
+                    **user_config.get("compress_configuration",{}).get("run_config", {})
+                }
             },
             "model_list": [user_config.get("model_configuration", {})],
         }

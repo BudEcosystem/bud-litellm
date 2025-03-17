@@ -181,7 +181,7 @@ from litellm.proxy.hooks.prompt_injection_detection import (
 )
 from litellm.proxy.hooks.proxy_failure_handler import _PROXY_failure_handler
 from litellm.proxy.hooks.proxy_track_cost_callback import _PROXY_track_cost_callback
-from litellm.proxy.litellm_pre_call_utils import add_litellm_data_to_request
+from litellm.proxy.litellm_pre_call_utils import add_litellm_data_to_request, compressor_call
 from litellm.proxy.management_endpoints.budget_management_endpoints import (
     router as budget_management_router,
 )
@@ -3464,6 +3464,9 @@ async def chat_completion(  # noqa: PLR0915
             version=version,
             proxy_config=proxy_config,
         )
+        data = await compressor_call(
+            data=data,
+        )
 
         data["model"] = (
             general_settings.get("completion_model", None)  # server default
@@ -3754,6 +3757,9 @@ async def completion(  # noqa: PLR0915
             proxy_config=proxy_config,
         )
 
+        data = await compressor_call(
+            data=data,
+        )
         # override with user settings, these are params passed via cli
         if user_temperature:
             data["temperature"] = user_temperature

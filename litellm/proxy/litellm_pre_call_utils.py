@@ -24,6 +24,7 @@ from litellm.types.utils import (
     StandardLoggingUserAPIKeyMetadata,
     SupportedCacheControls,
 )
+from litellm.prompt_compression.lingua_compressor import PromptCompressorSingleton as PromptCompressor
 
 service_logger_obj = ServiceLogging()  # used for tracking latency on OTEL
 
@@ -375,6 +376,40 @@ class LiteLLMProxyRequestSetup:
             callback_vars=callback_vars_dict,
         )
 
+
+async def compressor_call(  # noqa: PLR0915
+    data: dict,
+):
+    comp_conf = data.get('user_config',{}).get('compress_configuration',{})
+    user_comp_conf = data.get('compress_configuration',{})
+    if 'compress_configuration' in data.get('user_config',{}).keys():
+        del(data['user_config']['compress_configuration'])
+    if 'compress_configuration' in data.keys():
+        del(data['compress_configuration'])
+        del(data['proxy_server_request']['body']['compress_configuration'])
+    for key, value in user_comp_conf.items():
+        if isinstance(value, dict) and key in comp_conf:
+            comp_conf[key].update(value)  # Merge nested dictionaries
+        else:
+            comp_conf[key] = value  # Override non-dict values
+    if 'is_enabled' not in user_comp_conf.keys() and user_comp_conf.get('init_config',{}).get('model_name'):
+       comp_conf['is_enabled'] = True
+    if comp_conf.get('is_enabled'):
+        compressor = PromptCompressor(**comp_conf.get('init_config',{}))
+        for m in data.get("messages",[]):
+            if m["role"] == "user":
+                user_content = m.get("content")
+
+                # Case 1: content is a string (single text prompt)
+                if isinstance(user_content, str):
+                    m["content"] = compressor.compress(m["content"],**comp_conf.get('run_config',{})).get('compressed_prompt',m["content"])
+
+                # Case 2: content is a list (multiple elements)
+                elif isinstance(user_content, list):
+                    for item in user_content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            item["text"] = compressor.compress(item["text"],**comp_conf.get('run_config',{})).get('compressed_prompt',item["text"])
+    return data
 
 async def add_litellm_data_to_request(  # noqa: PLR0915
     data: dict,

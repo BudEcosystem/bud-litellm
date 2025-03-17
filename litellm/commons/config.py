@@ -17,7 +17,7 @@
 """Manages application and secret configurations, utilizing environment variables and Dapr's configuration store for syncing."""
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 from budmicroframe.commons.config import BaseAppConfig, BaseSecretsConfig, register_settings, enable_periodic_sync_from_store
 from pydantic import DirectoryPath, Field
@@ -70,6 +70,15 @@ class AppConfig(BaseAppConfig):
 
     #origins
     cors_origins: str = Field("http://localhost:3000", alias="CORS_ORIGINS")
+
+    # Prompt Compression
+    enable_compress: bool = Field(False, alias="ENABLE_COMPRESS")
+    compression_model: str = Field("microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank", alias="COMPRESSION_MODEL")
+    use_llmlingua2: bool = Field(True, alias="USE_LLMLINGUA2")
+    compress_device_map: str = Field("cpu", alias="COMPRESS_DEVICE_MAP")
+    compress_rate: float = Field(0.33, alias="COMPRESS_RATE")
+    force_tokens: List[str] = Field(default=['\n', '?'], alias="FORCE_TOKENS")
+
     
 
 class SecretsConfig(BaseSecretsConfig):

@@ -56,3 +56,7 @@ pydantic==2.10.0 # proxy + openai req.
 jsonschema==4.22.0 # validating json schema
 websockets==10.4 # for realtime API
 ####
+
+### llmlingua
+llmlingua==0.2.2
+###
