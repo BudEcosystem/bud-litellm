@@ -77,6 +77,10 @@ def _assemble_complete_response_from_streaming_chunks(
     complete_streaming_response: Optional[
         Union[ModelResponse, TextCompletionResponse]
     ] = None
+
+    if isinstance(result, ModelResponse):
+        return result
+
     if result.choices[0].finish_reason is not None:  # if it's the last chunk
         streaming_chunks.append(result)
         try:
@@ -110,7 +114,7 @@ def _set_duration_in_model_call_details(
         if logging_obj and hasattr(logging_obj, "model_call_details"):
             logging_obj.model_call_details["llm_api_duration_ms"] = duration_ms
         else:
-            verbose_logger.warning(
+            verbose_logger.debug(
                 "`logging_obj` not found - unable to track `llm_api_duration_ms"
             )
     except Exception as e:
