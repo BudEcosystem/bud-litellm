@@ -212,6 +212,8 @@ class BudServeMiddleware(BaseHTTPMiddleware):
             },
             "model_list": [user_config.get("model_configuration", {})],
         }
+        request_data['model'] = user_config.get("model_configuration", {}).get("model_name")
+        
         request._body = json.dumps(request_data).encode("utf-8")
         return await call_next(request)
 
