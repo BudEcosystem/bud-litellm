@@ -1,5 +1,7 @@
 import asyncio
 import os
+import ssl
+import time
 from typing import TYPE_CHECKING, Any, Callable, List, Mapping, Optional, Union
 
 import httpx
@@ -93,11 +95,15 @@ class AsyncHTTPHandler:
         event_hooks: Optional[Mapping[str, List[Callable[..., Any]]]] = None,
         concurrent_limit=1000,
         client_alias: Optional[str] = None,  # name for client in logs
+        ssl_verify: Optional[VerifyTypes] = None,
     ):
         self.timeout = timeout
         self.event_hooks = event_hooks
         self.client = self.create_client(
-            timeout=timeout, concurrent_limit=concurrent_limit, event_hooks=event_hooks
+            timeout=timeout,
+            concurrent_limit=concurrent_limit,
+            event_hooks=event_hooks,
+            ssl_verify=ssl_verify,
         )
         self.client_alias = client_alias
 
@@ -106,11 +112,33 @@ class AsyncHTTPHandler:
         timeout: Optional[Union[float, httpx.Timeout]],
         concurrent_limit: int,
         event_hooks: Optional[Mapping[str, List[Callable[..., Any]]]],
+        ssl_verify: Optional[VerifyTypes] = None,
     ) -> httpx.AsyncClient:
 
         # SSL certificates (a.k.a CA bundle) used to verify the identity of requested hosts.
         # /path/to/certificate.pem
-        ssl_verify = os.getenv("SSL_VERIFY", litellm.ssl_verify)
+        if ssl_verify is None:
+            ssl_verify = os.getenv("SSL_VERIFY", litellm.ssl_verify)
+
+        ssl_security_level = os.getenv("SSL_SECURITY_LEVEL")
+
+        # If ssl_verify is not False and we need a lower security level
+        if (
+            not ssl_verify
+            and ssl_security_level
+            and isinstance(ssl_security_level, str)
+        ):
+            # Create a custom SSL context with reduced security level
+            custom_ssl_context = ssl.create_default_context()
+            custom_ssl_context.set_ciphers(ssl_security_level)
+
+            # If ssl_verify is a path to a CA bundle, load it into our custom context
+            if isinstance(ssl_verify, str) and os.path.exists(ssl_verify):
+                custom_ssl_context.load_verify_locations(cafile=ssl_verify)
+
+            # Use our custom SSL context instead of the original ssl_verify value
+            ssl_verify = custom_ssl_context
+
         # An SSL certificate used by the requested host to authenticate the client.
         # /path/to/client.pem
         cert = os.getenv("SSL_CERTIFICATE", litellm.ssl_certificate)
@@ -173,6 +201,7 @@ class AsyncHTTPHandler:
         stream: bool = False,
         logging_obj: Optional[LiteLLMLoggingObject] = None,
     ):
+        start_time = time.time()
         try:
             if timeout is None:
                 timeout = self.timeout
@@ -201,6 +230,8 @@ class AsyncHTTPHandler:
             finally:
                 await new_client.aclose()
         except httpx.TimeoutException as e:
+            end_time = time.time()
+            time_delta = round(end_time - start_time, 3)
             headers = {}
             error_response = getattr(e, "response", None)
             if error_response is not None:
@@ -208,7 +239,7 @@ class AsyncHTTPHandler:
                     headers["response_headers-{}".format(key)] = value
 
             raise litellm.Timeout(
-                message=f"Connection timed out after {timeout} seconds.",
+                message=f"Connection timed out. Timeout passed={timeout}, time taken={time_delta} seconds",
                 model="default-model-name",
                 llm_provider="litellm-httpx-handler",
                 headers=headers,
@@ -440,13 +471,17 @@ class HTTPHandler:
         timeout: Optional[Union[float, httpx.Timeout]] = None,
         concurrent_limit=1000,
         client: Optional[httpx.Client] = None,
+        ssl_verify: Optional[Union[bool, str]] = None,
     ):
         if timeout is None:
             timeout = _DEFAULT_TIMEOUT
 
         # SSL certificates (a.k.a CA bundle) used to verify the identity of requested hosts.
         # /path/to/certificate.pem
-        ssl_verify = os.getenv("SSL_VERIFY", litellm.ssl_verify)
+
+        if ssl_verify is None:
+            ssl_verify = os.getenv("SSL_VERIFY", litellm.ssl_verify)
+
         # An SSL certificate used by the requested host to authenticate the client.
         # /path/to/client.pem
         cert = os.getenv("SSL_CERTIFICATE", litellm.ssl_certificate)
@@ -506,7 +541,15 @@ class HTTPHandler:
         try:
             if timeout is not None:
                 req = self.client.build_request(
-                    "POST", url, data=data, json=json, params=params, headers=headers, timeout=timeout, files=files, content=content  # type: ignore
+                    "POST",
+                    url,
+                    data=data,  # type: ignore
+                    json=json,
+                    params=params,
+                    headers=headers,
+                    timeout=timeout,
+                    files=files,
+                    content=content,  # type: ignore
                 )
             else:
                 req = self.client.build_request(
@@ -660,6 +703,7 @@ def get_async_httpx_client(
         _new_client = AsyncHTTPHandler(
             timeout=httpx.Timeout(timeout=600.0, connect=5.0)
         )
+
     litellm.in_memory_llm_clients_cache.set_cache(
         key=_cache_key_name,
         value=_new_client,
@@ -684,6 +728,7 @@ def _get_httpx_client(params: Optional[dict] = None) -> HTTPHandler:
                 pass
 
     _cache_key_name = "httpx_client" + _params_key_name
+
     _cached_client = litellm.in_memory_llm_clients_cache.get_cache(_cache_key_name)
     if _cached_client:
         return _cached_client
