@@ -6,6 +6,9 @@ ARG LITELLM_RUNTIME_IMAGE=python:3.11.8-slim
 # Builder stage
 FROM $LITELLM_BUILD_IMAGE AS builder
 
+ARG GIT_ACCESS_TOKEN
+ENV GIT_ACCESS_TOKEN=$GIT_ACCESS_TOKEN
+
 # Set the working directory to /app
 WORKDIR /app
 

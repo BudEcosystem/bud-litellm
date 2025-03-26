@@ -12,6 +12,8 @@ else:
     LitellmRouter = Any
 
 
+from budcortex.integrations.litellm.router import BudCortexRouter as Router
+
 ROUTE_ENDPOINT_MAPPING = {
     "acompletion": "/chat/completions",
     "atext_completion": "/completions",
@@ -59,7 +61,7 @@ async def route_request(
 
     elif "user_config" in data:
         router_config = data.pop("user_config")
-        user_router = litellm.Router(**router_config)
+        user_router = Router(**router_config)
         ret_val = getattr(user_router, f"{route_type}")(**data)
         user_router.discard()
         return ret_val
@@ -76,30 +78,19 @@ async def route_request(
             models = [model.strip() for model in data.pop("model").split(",")]
             return llm_router.abatch_completion(models=models, **data)
     elif llm_router is not None:
-        if (
-            data["model"] in router_model_names
-            or data["model"] in llm_router.get_model_ids()
-        ):
+        if data["model"] in router_model_names or data["model"] in llm_router.get_model_ids():
             return getattr(llm_router, f"{route_type}")(**data)
 
-        elif (
-            llm_router.model_group_alias is not None
-            and data["model"] in llm_router.model_group_alias
-        ):
+        elif llm_router.model_group_alias is not None and data["model"] in llm_router.model_group_alias:
             return getattr(llm_router, f"{route_type}")(**data)
 
         elif data["model"] in llm_router.deployment_names:
-            return getattr(llm_router, f"{route_type}")(
-                **data, specific_deployment=True
-            )
+            return getattr(llm_router, f"{route_type}")(**data, specific_deployment=True)
 
         elif data["model"] not in router_model_names:
             if llm_router.router_general_settings.pass_through_all_models:
                 return getattr(litellm, f"{route_type}")(**data)
-            elif (
-                llm_router.default_deployment is not None
-                or len(llm_router.pattern_router.patterns) > 0
-            ):
+            elif llm_router.default_deployment is not None or len(llm_router.pattern_router.patterns) > 0:
                 return getattr(llm_router, f"{route_type}")(**data)
             elif route_type == "amoderation":
                 # moderation endpoint does not require `model` parameter

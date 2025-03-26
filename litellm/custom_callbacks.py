@@ -24,7 +24,6 @@ from budmicroframe.shared.dapr_service import DaprService
 # request_body, response_body, cost = 0, is_cache_hit = False, is_success = False, is_streaming = False
 
 
-
 class RequestMetrics(CloudEventBase):
     request_id: UUID
     request_ip: Optional[str] = None
@@ -58,18 +57,20 @@ class RequestMetrics(CloudEventBase):
         if self.request_arrival_time > self.response_end_time:
             raise ValueError("Request arrival time cannot be after response end time.")
         return self
-   
+
+
 class CredentialUpdatePayload(BaseModel):
     hashed_key: str
     last_used_at: datetime
 
+
 class CredentialUpdateRequest(CloudEventBase):
     payload: CredentialUpdatePayload
-    
-    
+
+
 class InferenceQualityScoreRequest(CloudEventBase):
     request_id: UUID
-    scoring_tool: str = 'LLMGuardScorer'
+    scoring_tool: str = "LLMGuardScorer"
     is_success: bool
     project_id: Optional[UUID] = None
     model_id: Optional[UUID] = None
@@ -77,25 +78,26 @@ class InferenceQualityScoreRequest(CloudEventBase):
     prompt: str
     response: str
     request_arrival_time: datetime
-    
+
+
 # This file includes the custom callbacks for LiteLLM Proxy
 # Once defined, these can be passed in proxy_config.yaml
 class MyCustomHandler(CustomLogger):
-    def log_pre_api_call(self, model, messages, kwargs): 
+    def log_pre_api_call(self, model, messages, kwargs):
         verbose_logger.info("Pre-API Call")
-    
-    def log_post_api_call(self, kwargs, response_obj, start_time, end_time): 
+
+    def log_post_api_call(self, kwargs, response_obj, start_time, end_time):
         verbose_logger.info("Post-API Call")
 
     def log_stream_event(self, kwargs, response_obj, start_time, end_time):
         verbose_logger.info("On Stream")
-        
-    def log_success_event(self, kwargs, response_obj, start_time, end_time): 
+
+    def log_success_event(self, kwargs, response_obj, start_time, end_time):
         verbose_logger.info("On Success")
 
-    def log_failure_event(self, kwargs, response_obj, start_time, end_time): 
+    def log_failure_event(self, kwargs, response_obj, start_time, end_time):
         verbose_logger.info("On Failure")
-        
+
     def get_request_metrics(self, kwargs, response_obj, start_time, end_time, failure=False) -> RequestMetrics:
         # log: key, user, model, prompt, response, tokens, cost
         # Access kwargs passed to litellm.completion()
@@ -105,11 +107,14 @@ class MyCustomHandler(CustomLogger):
         model = kwargs.get("model", None)
         is_cache_hit = kwargs.get("cache_hit")
         verbose_logger.info(f"\nresponse from cache : {is_cache_hit}")
-        response_body = copy.deepcopy(kwargs.get("standard_logging_object", {}).get("response", {})) if not failure else {
-            "exception": str(kwargs.get("exception", None)),
-            "traceback": kwargs.get("traceback_exception", None) 
-        }
-        response_str = response_body.get("choices", [{}])[0].get("message", {}).get("content", "") if not failure else ""
+        response_body = (
+            copy.deepcopy(kwargs.get("standard_logging_object", {}).get("response", {}))
+            if not failure
+            else {"exception": str(kwargs.get("exception", None)), "traceback": kwargs.get("traceback_exception", None)}
+        )
+        response_str = (
+            response_body.get("choices", [{}])[0].get("message", {}).get("content", "") if not failure else ""
+        )
         # Access litellm_params passed to litellm.completion(), example access `metadata`
         litellm_params = kwargs.get("litellm_params", {})
         proxy_server_request = litellm_params.get("proxy_server_request", {})
@@ -120,7 +125,7 @@ class MyCustomHandler(CustomLogger):
             proxy_server_request["body"] = {
                 "model": model,
                 "messages": kwargs.get("messages", []),
-                "stream": kwargs.get("stream", False)
+                "stream": kwargs.get("stream", False),
             }
         prompt_str = ""
         for message in proxy_server_request["body"].get("messages", []):
@@ -129,16 +134,18 @@ class MyCustomHandler(CustomLogger):
                     prompt_str += " "
                 # check if message["content"] is a list
                 if isinstance(message["content"], list):
-                    message["content"] = " ".join(content_item["text"] for content_item in message["content"] if "text" in content_item)
+                    message["content"] = " ".join(
+                        content_item["text"] for content_item in message["content"] if "text" in content_item
+                    )
                 prompt_str += message["content"]
-        
+
         model_info = copy.deepcopy(litellm_params.get("model_info", {}))
         metadata = litellm_params.get("metadata", {})
         endpoint = metadata.get("endpoint", "")
         api_route = urlparse(str(endpoint)).path
         if litellm_params.get("api_base"):
             api_route = f"{litellm_params['api_base']}{api_route}"
-        
+
         # Calculate cost using  litellm.completion_cost()
         response_obj = response_obj or {}
         original_model = None
@@ -148,13 +155,13 @@ class MyCustomHandler(CustomLogger):
         elif hasattr(response_obj, "model"):
             original_model = response_obj.model
             response_obj.model = model_info.get("deploy_model_uri", None)
-        
+
         if model_info.get("cloud", False) and not is_cache_hit:
             cost = litellm.completion_cost(completion_response=response_obj) if not failure else 0
         else:
             # TODO: need some way to calculate cost for local models
             cost = 0
-            
+
         if isinstance(response_obj, dict) and response_obj.get("model"):
             response_obj["model"] = original_model
         elif hasattr(response_obj, "model"):
@@ -163,7 +170,7 @@ class MyCustomHandler(CustomLogger):
         usage = response_obj.get("usage", None) or {}
         if isinstance(usage, litellm.Usage):
             usage = dict(usage)
-        
+
         metrics_data = RequestMetrics(
             request_id=kwargs.get("litellm_call_id", uuid4()),
             project_id=metadata.get("project_id", None),
@@ -186,7 +193,7 @@ class MyCustomHandler(CustomLogger):
             is_streaming=kwargs.get("stream", False),
             is_success=not failure,
         )
-        
+
         inference_quality_score_request = InferenceQualityScoreRequest(
             request_id=metrics_data.request_id,
             is_success=metrics_data.is_success,
@@ -195,7 +202,7 @@ class MyCustomHandler(CustomLogger):
             endpoint_id=metrics_data.endpoint_id,
             prompt=prompt_str,
             response=response_str,
-            request_arrival_time=metrics_data.request_arrival_time
+            request_arrival_time=metrics_data.request_arrival_time,
         )
         # verbose_logger.info(f"\n\nMetrics Data: {metrics_data}\n\n")
         return metrics_data, inference_quality_score_request
@@ -204,16 +211,17 @@ class MyCustomHandler(CustomLogger):
         litellm_params = kwargs.get("litellm_params", {})
         metadata = litellm_params.get("metadata", {})
         api_key_hash = metadata.get("user_api_key_hash")
-        return CredentialUpdateRequest(
-            payload=CredentialUpdatePayload(
-                hashed_key=api_key_hash,
-                last_used_at=start_time
-            )
-        ) if api_key_hash else None
+        return (
+            CredentialUpdateRequest(payload=CredentialUpdatePayload(hashed_key=api_key_hash, last_used_at=start_time))
+            if api_key_hash
+            else None
+        )
 
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         verbose_logger.info("On Async Success!")
-        metrics_data, inference_quality_score_request = self.get_request_metrics(kwargs, response_obj, start_time, end_time)
+        metrics_data, inference_quality_score_request = self.get_request_metrics(
+            kwargs, response_obj, start_time, end_time
+        )
         metrics_data_json = metrics_data.model_dump(mode="json")
         verbose_logger.info(f"Metrics Data JSON: {inference_quality_score_request}")
         with DaprService() as dapr_service:
@@ -244,10 +252,12 @@ class MyCustomHandler(CustomLogger):
                 )
         return
 
-    async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time): 
+    async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
         try:
             verbose_logger.info("On Async Failure !")
-            metrics_data, inference_quality_score_request = self.get_request_metrics(kwargs, response_obj, start_time, end_time, failure=True)
+            metrics_data, inference_quality_score_request = self.get_request_metrics(
+                kwargs, response_obj, start_time, end_time, failure=True
+            )
             metrics_data_json = metrics_data.model_dump(mode="json")
             # verbose_logger.info(f"Metrics Data JSON: {metrics_data_json}")
             with DaprService() as dapr_service:
@@ -268,8 +278,10 @@ class MyCustomHandler(CustomLogger):
         except Exception as e:
             # TODO: what metrics data to log here?
             import traceback
+
             verbose_logger.info(f"Exception: {e}")
             verbose_logger.info(f"Traceback: {traceback.format_exc()}")
+
 
 proxy_handler_instance = MyCustomHandler()
 
