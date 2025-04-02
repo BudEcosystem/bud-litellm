@@ -115,7 +115,7 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 
 import litellm
-from litellm import Router
+# from litellm import Router
 from litellm._logging import verbose_proxy_logger, verbose_router_logger
 from litellm.caching.caching import DualCache, RedisCache
 from litellm.constants import LITELLM_PROXY_ADMIN_NAME
@@ -360,6 +360,8 @@ except Exception:
         import enterprise  # type: ignore
     except Exception:
         pass
+
+from budcortex.integrations.litellm.router import BudCortexRouter as Router
 
 server_root_path = os.getenv("SERVER_ROOT_PATH", "")
 _license_check = LicenseCheck()
@@ -1760,7 +1762,7 @@ class ProxyConfig:
         return credential_list
 
     async def load_config(  # noqa: PLR0915
-        self, router: Optional[litellm.Router], config_file_path: str
+        self, router: Optional[Router], config_file_path: str
     ):
         """
         Load config values into proxy global state
@@ -2197,7 +2199,7 @@ class ProxyConfig:
         ## ROUTER SETTINGS (e.g. routing_strategy, ...)
         router_settings = config.get("router_settings", None)
         if router_settings and isinstance(router_settings, dict):
-            arg_spec = inspect.getfullargspec(litellm.Router)
+            arg_spec = inspect.getfullargspec(Router)
             # model list already set
             exclude_args = {
                 "self",
@@ -2209,7 +2211,7 @@ class ProxyConfig:
             for k, v in router_settings.items():
                 if k in available_args:
                     router_params[k] = v
-        router = litellm.Router(
+        router = Router(
             **router_params,
             assistants_config=assistants_config,
             router_general_settings=RouterGeneralSettings(
@@ -2506,7 +2508,7 @@ class ProxyConfig:
                 )
                 if len(_model_list) > 0:
                     verbose_proxy_logger.debug(f"_model_list: {_model_list}")
-                    llm_router = litellm.Router(
+                    llm_router = Router(
                         model_list=_model_list,
                         router_general_settings=RouterGeneralSettings(
                             async_only_mode=True  # only init async clients

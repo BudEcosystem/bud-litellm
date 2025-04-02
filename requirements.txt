@@ -1,18 +1,18 @@
-langchain_huggingface
 # gptcache
-langchain_community
+langchain_community >= 0.3.7
+langchain_huggingface
 # LITELLM PROXY DEPENDENCIES #
 anyio==4.5.0 # openai + http req.
-httpx==0.27.0 # Pin Httpx dependency
+httpx==0.28.1 # Pin Httpx dependency
 openai==1.68.2  # openai req. 
-fastapi==0.115.5 # server dep
+fastapi==0.115.11 # server dep
 backoff==2.2.1 # server dep
 pyyaml==6.0.2 # server dep
 uvicorn==0.29.0 # server dep
 gunicorn==23.0.0 # server dep
 uvloop==0.21.0 # uvicorn dep, gives us much better performance under load
 boto3==1.34.34 # aws bedrock/sagemaker calls
-redis==5.0.0 # caching
+redis==5.2.1 # caching
 # numpy==2.1.1 # semantic caching
 numpy
 # redis==5.2.1 # redis caching
@@ -47,15 +47,17 @@ tzdata==2025.1 # IANA time zone database
 
 ### LITELLM PACKAGE DEPENDENCIES
 python-dotenv==1.0.0 # for env 
-tiktoken==0.8.0 # for calculating usage
+tiktoken==0.9.0 # for calculating usage
 importlib-metadata==6.8.0 # for random utils
 tokenizers==0.20.2 # for calculating usage
 click==8.1.7 # for proxy cli 
 jinja2==3.1.6 # for prompt templates
-aiohttp==3.10.2 # for network calls
+aiohttp==3.11.13 # for network calls
 aioboto3==12.3.0 # for async sagemaker calls
 tenacity==8.2.3  # for retrying requests, when litellm.num_retries set
-pydantic==2.10.2 # proxy + openai req.
+pydantic==2.10.6 # proxy + openai req.
 jsonschema==4.22.0 # validating json schema
 websockets==13.1.0 # for realtime API
 ####
+
+git+https://${GIT_ACCESS_TOKEN}@github.com/BudEcosystem/bud-cortex.git

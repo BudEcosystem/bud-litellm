@@ -4,6 +4,10 @@ import os
 from datetime import datetime
 from logging import Formatter
 
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("prisma").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 set_verbose = False
 
 if set_verbose is True:
