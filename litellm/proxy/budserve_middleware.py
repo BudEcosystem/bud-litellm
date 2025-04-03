@@ -201,7 +201,15 @@ class BudServeMiddleware(BaseHTTPMiddleware):
             "routing_strategy_args": {"routing_policy": user_config.get("routing_policy") or {}},
             "model_list": user_config.get("model_configuration", []),
         }
-        request_data['model'] = user_config.get("model_configuration", {}).get("model_name")
+        try:
+            request_data['model'] = user_config.get("model_configuration", [])[0].get("model_name")
+        except IndexError as e:
+            raise ProxyException(
+                message=f"User config don't have any supported model config: {e}",
+                type="internal_server_error",
+                param=endpoint_name,
+                code=500,
+            )
         
         request._body = json.dumps(request_data).encode("utf-8")
         return await call_next(request)
