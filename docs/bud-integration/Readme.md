@@ -42,6 +42,8 @@ litellm_settings:
 ### 4. **Bud Architecture Integration**
 Litellm runs as part of the `bud-proxy` microservice and handles all incoming inference requests. It routes these requests to appropriate model backends using configurations and strategies defined by the user.
 
+![alt text](img/budlitellm-life_of_request.jpg "Life of Rquest")
+
 ---
 
 ### 5. **Custom Auth & Middleware**
