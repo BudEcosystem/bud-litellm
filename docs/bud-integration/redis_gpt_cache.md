@@ -11,9 +11,9 @@ Key benefits of integrating GPTCache include:
 
 - **Enhanced Performance**: Caching allows for faster response times, as results can be fetched directly from the cache without interacting with the LLM service.
 
-[Ref](https://github.com/zilliztech/GPTCache/blob/main/README.md)
+![alt text](img/gpt_cache_flow.jpg "GPTCache Flow")
 
-![alt text](img/GPTCacheStructure.png "GPTCache Structure")
+[Ref](https://github.com/zilliztech/GPTCache/blob/main/README.md)
 
 GPTCache has below components:
 
@@ -27,6 +27,8 @@ Any HuggingFaceEmbeddings compatible model can be given for genereating embeddin
 -- **Similarity Evaluator**: This module collects data from both the Cache Storage and Vector Store, and uses various strategies to determine the similarity between the input request and the requests from the Vector Store. Based on this similarity, it determines whether a request matches the cache. We use SBERT crossencoders to evaluate sentences pair similarity. This evaluator use the crossencoder model to evaluate the similarity of two sentences. Default is 'cross-encoder/quora-distilroberta-base'.
 
 -- **Cache Manager**: This is responsible for controlling the operation of both the Scalar Storage and Vector Storage. It manages eviction policy of scalar and vector storage using LRU, LFU, FIFO, RR and TTL strategies which can be defined by the user.
+
+![alt text](img/GPTCacheStructure.png "GPTCache Structure")
 
 ---
 
