@@ -35,7 +35,7 @@ class RequestMetrics(CloudEventBase):
     model_id: Optional[UUID]
     model_name: Optional[str]
     provider: Optional[str]
-    modality: Optional[str]
+    modality: list[str]
     request_arrival_time: datetime
     request_forwarded_time: datetime
     response_start_time: datetime
