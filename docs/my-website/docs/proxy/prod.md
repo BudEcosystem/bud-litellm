@@ -107,9 +107,9 @@ general_settings:
 
 By default, LiteLLM writes several types of logs to the database:
 - Every LLM API request to the `LiteLLM_SpendLogs` table
-- LLM Exceptions to the `LiteLLM_LogsErrors` table
+- LLM Exceptions to the `LiteLLM_SpendLogs` table
 
-If you're not viewing these logs on the LiteLLM UI (most users use Prometheus for monitoring), you can disable them by setting the following flags to `True`:
+If you're not viewing these logs on the LiteLLM UI, you can disable them by setting the following flags to `True`:
 
 ```yaml
 general_settings:
@@ -133,7 +133,7 @@ To ensure only one service manages database migrations, use our [Helm PreSync ho
   ```yaml
   db:
     useExisting: true # use existing Postgres DB
-    url: postgresql://ishaanjaffer0324:3rnwpOBau6hT@ep-withered-mud-a5dkdpke.us-east-2.aws.neon.tech/test-argo-cd?sslmode=require # url of existing Postgres DB
+    url: postgresql://ishaanjaffer0324:... # url of existing Postgres DB
   ```
 
 2. **LiteLLM Pods**:

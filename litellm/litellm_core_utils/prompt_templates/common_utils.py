@@ -2,15 +2,11 @@
 Common utility functions used for translating messages across providers
 """
 
-import json
-from copy import deepcopy
 from typing import Dict, List, Literal, Optional, Union, cast
 
-import litellm
 from litellm.types.llms.openai import (
     AllMessageValues,
     ChatCompletionAssistantMessage,
-    ChatCompletionResponseMessage,
     ChatCompletionUserMessage,
 )
 from litellm.types.utils import Choices, ModelResponse, StreamingChoices
@@ -79,6 +75,16 @@ def convert_content_list_to_str(message: AllMessageValues) -> str:
             texts = message_content
 
     return texts
+
+
+def get_str_from_messages(messages: List[AllMessageValues]) -> str:
+    """
+    Converts a list of messages to a string
+    """
+    text = ""
+    for message in messages:
+        text += convert_content_list_to_str(message=message)
+    return text
 
 
 def is_non_content_values_set(message: AllMessageValues) -> bool:

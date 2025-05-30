@@ -1,24 +1,14 @@
-import io
 import json
-import os
-import sys
-import time
-import traceback
-import types
 from copy import deepcopy
-from enum import Enum
-from functools import partial
-from typing import Any, AsyncIterator, Callable, Dict, Iterator, List, Optional, Union
+from typing import Any, Callable, List, Optional, Union
 
-import httpx  # type: ignore
-import requests  # type: ignore
+import httpx
 
 import litellm
 from litellm._logging import verbose_logger
 from litellm.litellm_core_utils.asyncify import asyncify
+from litellm.llms.bedrock.base_aws_llm import BaseAWSLLM
 from litellm.llms.custom_httpx.http_handler import (
-    AsyncHTTPHandler,
-    HTTPHandler,
     _get_httpx_client,
     get_async_httpx_client,
 )
@@ -31,8 +21,6 @@ from litellm.utils import (
     get_secret,
 )
 
-from litellm.llms.bedrock.base_aws_llm import BaseAWSLLM
-from litellm.litellm_core_utils.prompt_templates.factory import custom_prompt, prompt_factory
 from ..common_utils import AWSEventStreamDecoder, SagemakerError
 from .transformation import SagemakerConfig
 
@@ -114,10 +102,8 @@ class SagemakerLLM(BaseAWSLLM):
         extra_headers: Optional[dict] = None,
     ):
         try:
-            import boto3
             from botocore.auth import SigV4Auth
             from botocore.awsrequest import AWSRequest
-            from botocore.credentials import Credentials
         except ImportError:
             raise ImportError("Missing boto3 to call bedrock. Run 'pip install boto3'.")
 
@@ -227,7 +213,7 @@ class SagemakerLLM(BaseAWSLLM):
                 sync_response = sync_handler.post(
                     url=prepared_request.url,
                     headers=prepared_request.headers,  # type: ignore
-                    json=data,
+                    data=prepared_request.body,
                     stream=stream,
                 )
 
@@ -322,7 +308,7 @@ class SagemakerLLM(BaseAWSLLM):
                 sync_response = sync_handler.post(
                     url=prepared_request.url,
                     headers=prepared_request.headers,  # type: ignore
-                    json=_data,
+                    data=prepared_request.body,
                     timeout=timeout,
                 )
 
@@ -370,7 +356,7 @@ class SagemakerLLM(BaseAWSLLM):
         self,
         api_base: str,
         headers: dict,
-        data: dict,
+        data: str,
         logging_obj,
         client=None,
     ):
@@ -382,7 +368,7 @@ class SagemakerLLM(BaseAWSLLM):
             response = await client.post(
                 api_base,
                 headers=headers,
-                json=data,
+                data=data,
                 stream=True,
             )
 
@@ -447,10 +433,14 @@ class SagemakerLLM(BaseAWSLLM):
             "messages": messages,
         }
         prepared_request = await asyncified_prepare_request(**prepared_request_args)
+        if model_id is not None:  # Fixes https://github.com/BerriAI/litellm/issues/8889
+            prepared_request.headers.update(
+                {"X-Amzn-SageMaker-Inference-Component": model_id}
+            )
         completion_stream = await self.make_async_call(
             api_base=prepared_request.url,
             headers=prepared_request.headers,  # type: ignore
-            data=data,
+            data=prepared_request.body,
             logging_obj=logging_obj,
         )
         streaming_response = CustomStreamWrapper(
@@ -525,14 +515,14 @@ class SagemakerLLM(BaseAWSLLM):
                 # Add model_id as InferenceComponentName header
                 # boto3 doc: https://docs.aws.amazon.com/sagemaker/latest/APIReference/API_runtime_InvokeEndpoint.html
                 prepared_request.headers.update(
-                    {"X-Amzn-SageMaker-Inference-Componen": model_id}
+                    {"X-Amzn-SageMaker-Inference-Component": model_id}
                 )
             # make async httpx post request here
             try:
                 response = await async_handler.post(
                     url=prepared_request.url,
                     headers=prepared_request.headers,  # type: ignore
-                    json=data,
+                    data=prepared_request.body,
                     timeout=timeout,
                 )
 

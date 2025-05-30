@@ -2,12 +2,9 @@ import base64
 import time
 from typing import Any, Dict, List, Optional, Union
 
-from litellm.exceptions import APIError
 from litellm.types.llms.openai import (
     ChatCompletionAssistantContentValue,
     ChatCompletionAudioDelta,
-    ChatCompletionToolCallChunk,
-    ChatCompletionToolCallFunctionChunk,
 )
 from litellm.types.utils import (
     ChatCompletionAudioResponse,
@@ -16,6 +13,7 @@ from litellm.types.utils import (
     Function,
     FunctionCall,
     ModelResponse,
+    ModelResponseStream,
     PromptTokensDetails,
     Usage,
 )
@@ -106,7 +104,8 @@ class ChunkProcessor:
     def get_combined_tool_content(
         self, tool_call_chunks: List[Dict[str, Any]]
     ) -> List[ChatCompletionMessageToolCall]:
-        argument_list: List = []
+
+        argument_list: List[str] = []
         delta = tool_call_chunks[0]["choices"][0]["delta"]
         id = None
         name = None
@@ -174,6 +173,7 @@ class ChunkProcessor:
                 ),
             )
         )
+
         return tool_calls_list
 
     def get_combined_function_call_content(
@@ -320,8 +320,12 @@ class ChunkProcessor:
             usage_chunk: Optional[Usage] = None
             if "usage" in chunk:
                 usage_chunk = chunk["usage"]
-            elif isinstance(chunk, ModelResponse) and hasattr(chunk, "_hidden_params"):
+            elif (
+                isinstance(chunk, ModelResponse)
+                or isinstance(chunk, ModelResponseStream)
+            ) and hasattr(chunk, "_hidden_params"):
                 usage_chunk = chunk._hidden_params.get("usage", None)
+
             if usage_chunk is not None:
                 usage_chunk_dict = self._usage_chunk_calculation_helper(usage_chunk)
                 if (

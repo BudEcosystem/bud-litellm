@@ -3,7 +3,6 @@ from typing import List, Literal, Optional, Union
 
 from pydantic import BaseModel
 
-import litellm
 from litellm.types.utils import EmbeddingResponse, Usage
 
 from .types import *
@@ -49,7 +48,7 @@ class VertexAITextEmbeddingConfig(BaseModel):
         ] = None,
         title: Optional[str] = None,
     ) -> None:
-        locals_ = locals()
+        locals_ = locals().copy()
         for key, value in locals_.items():
             if key != "self" and value is not None:
                 setattr(self.__class__, key, value)
@@ -80,7 +79,7 @@ class VertexAITextEmbeddingConfig(BaseModel):
     ):
         for param, value in non_default_params.items():
             if param == "dimensions":
-                optional_params["output_dimensionality"] = value
+                optional_params["outputDimensionality"] = value
 
         if "input_type" in kwargs:
             optional_params["task_type"] = kwargs.pop("input_type")

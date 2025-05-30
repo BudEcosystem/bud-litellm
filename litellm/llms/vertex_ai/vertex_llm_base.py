@@ -6,20 +6,15 @@ Handles Authentication and generating request urls for Vertex AI and Google AI S
 
 import json
 import os
-from typing import TYPE_CHECKING, Any, Dict, Literal, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Literal, Optional, Tuple
 
 from litellm._logging import verbose_logger
 from litellm.litellm_core_utils.asyncify import asyncify
 from litellm.llms.base import BaseLLM
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
+from litellm.types.llms.vertex_ai import VERTEX_CREDENTIALS_TYPES
 
-from .common_utils import (
-    VertexAIError,
-    _get_gemini_url,
-    _get_vertex_url,
-    all_gemini_url_modes,
-    get_supports_system_message,
-)
+from .common_utils import _get_gemini_url, _get_vertex_url, all_gemini_url_modes
 
 if TYPE_CHECKING:
     from google.auth.credentials import Credentials as GoogleCredentialsObject
@@ -40,38 +35,44 @@ class VertexBase(BaseLLM):
         return vertex_region or "us-central1"
 
     def load_auth(
-        self, credentials: Optional[str], project_id: Optional[str]
+        self, credentials: Optional[VERTEX_CREDENTIALS_TYPES], project_id: Optional[str]
     ) -> Tuple[Any, str]:
         import google.auth as google_auth
         from google.auth import identity_pool
-        from google.auth.credentials import Credentials  # type: ignore[import-untyped]
         from google.auth.transport.requests import (
             Request,  # type: ignore[import-untyped]
         )
 
-        if credentials is not None and isinstance(credentials, str):
+        if credentials is not None:
             import google.oauth2.service_account
 
-            verbose_logger.debug(
-                "Vertex: Loading vertex credentials from %s", credentials
-            )
-            verbose_logger.debug(
-                "Vertex: checking if credentials is a valid path, os.path.exists(%s)=%s, current dir %s",
-                credentials,
-                os.path.exists(credentials),
-                os.getcwd(),
-            )
+            if isinstance(credentials, str):
+                verbose_logger.debug(
+                    "Vertex: Loading vertex credentials from %s", credentials
+                )
+                verbose_logger.debug(
+                    "Vertex: checking if credentials is a valid path, os.path.exists(%s)=%s, current dir %s",
+                    credentials,
+                    os.path.exists(credentials),
+                    os.getcwd(),
+                )
 
-            try:
-                if os.path.exists(credentials):
-                    json_obj = json.load(open(credentials))
-                else:
-                    json_obj = json.loads(credentials)
-            except Exception:
-                raise Exception(
-                    "Unable to load vertex credentials from environment. Got={}".format(
-                        credentials
+                try:
+                    if os.path.exists(credentials):
+                        json_obj = json.load(open(credentials))
+                    else:
+                        json_obj = json.loads(credentials)
+                except Exception:
+                    raise Exception(
+                        "Unable to load vertex credentials from environment. Got={}".format(
+                            credentials
+                        )
                     )
+            elif isinstance(credentials, dict):
+                json_obj = credentials
+            else:
+                raise ValueError(
+                    "Invalid credentials type: {}".format(type(credentials))
                 )
 
             # Check if the JSON object contains Workload Identity Federation configuration
@@ -116,7 +117,7 @@ class VertexBase(BaseLLM):
 
     def _ensure_access_token(
         self,
-        credentials: Optional[str],
+        credentials: Optional[VERTEX_CREDENTIALS_TYPES],
         project_id: Optional[str],
         custom_llm_provider: Literal[
             "vertex_ai", "vertex_ai_beta", "gemini"
@@ -209,7 +210,7 @@ class VertexBase(BaseLLM):
         gemini_api_key: Optional[str],
         vertex_project: Optional[str],
         vertex_location: Optional[str],
-        vertex_credentials: Optional[str],
+        vertex_credentials: Optional[VERTEX_CREDENTIALS_TYPES],
         stream: Optional[bool],
         custom_llm_provider: Literal["vertex_ai", "vertex_ai_beta", "gemini"],
         api_base: Optional[str],
@@ -260,7 +261,7 @@ class VertexBase(BaseLLM):
 
     async def _ensure_access_token_async(
         self,
-        credentials: Optional[str],
+        credentials: Optional[VERTEX_CREDENTIALS_TYPES],
         project_id: Optional[str],
         custom_llm_provider: Literal[
             "vertex_ai", "vertex_ai_beta", "gemini"

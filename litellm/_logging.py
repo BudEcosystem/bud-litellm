@@ -1,9 +1,12 @@
 import json
 import logging
 import os
-import traceback
 from datetime import datetime
 from logging import Formatter
+
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("prisma").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 set_verbose = False
 
@@ -103,3 +106,12 @@ def print_verbose(print_statement):
             print(print_statement)  # noqa
     except Exception:
         pass
+
+
+def _is_debugging_on() -> bool:
+    """
+    Returns True if debugging is on
+    """
+    if verbose_logger.isEnabledFor(logging.DEBUG) or set_verbose is True:
+        return True
+    return False

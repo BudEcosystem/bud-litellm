@@ -149,7 +149,7 @@ class RedisGPTCache(BaseCache, GPTCache):
                 if host is None or port is None or password is None:
                     raise Exception("Redis host, port, and password must be provided")
 
-            redis_url = "redis://:" + password + "@" + host + ":" + port
+            redis_url = f"redis://:{password}@{host}:{port}"
         self.redis_params = {"host": host, "port": port, "password": password}
         GPTCache.__init__(self, init_gptcache_redis)
         print_verbose(f"gptcache redis semantic-cache redis_url: {redis_url}")
@@ -242,7 +242,7 @@ class RedisGPTCache(BaseCache, GPTCache):
             cached_response = json.loads(
                 cached_response
             )  # Convert string to dictionary
-        except:
+        except Exception:
             cached_response = ast.literal_eval(cached_response)
         return cached_response
 
@@ -268,14 +268,14 @@ class RedisGPTCache(BaseCache, GPTCache):
         print_verbose(f"getting outside GET, results {results}")
         results = [json.loads(results)] if results is not None else None
 
-        if results == None:
+        if results is None:
             return None
 
         if isinstance(results, list):
             if len(results) == 0:
                 return None
 
-        cached_value = json.dumps(results[0]["response"])
+        cached_value = results[0]["response"]
         return self._get_cache_logic(cached_response=cached_value)
 
     async def async_get_cache(self, key: str, **kwargs):
@@ -288,11 +288,20 @@ class RedisGPTCache(BaseCache, GPTCache):
         # Directly call set_cache asynchronously
         return self.set_cache(key, value, **kwargs)
 
-    async def batch_cache_write(self, result: List[Tuple[str, Any]], *args, **kwargs):
+    async def batch_cache_write(self, key, value, **kwargs):
         """Batch write results to cache."""
-        for key, value in result:
-            self.async_set_cache(key, value, **kwargs)
+        self.async_set_cache(key, value, **kwargs)
 
     async def disconnect(self):
         """Perform any necessary cleanup on disconnect."""
         print_verbose("Disconnecting from cache system...")
+
+    async def async_set_cache_pipeline(self, cache_list, **kwargs):
+        """
+        Use Redis Pipelines for bulk write operations
+        """
+         # don't waste a network request if there's nothing to set
+        if len(cache_list) == 0:
+            return
+        for key, value in cache_list:
+            self.async_set_cache(key, value, **kwargs)

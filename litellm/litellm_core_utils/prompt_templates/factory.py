@@ -5,26 +5,18 @@ import traceback
 import uuid
 import xml.etree.ElementTree as ET
 from enum import Enum
-from typing import Any, List, Mapping, MutableMapping, Optional, Sequence, Tuple, cast
+from typing import Any, List, Optional, Tuple, cast, overload
 
-from jinja2 import BaseLoader, Template, exceptions, meta
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 import litellm
 import litellm.types
 import litellm.types.llms
 from litellm import verbose_logger
-from litellm.llms.custom_httpx.http_handler import HTTPHandler
-from litellm.types.completion import (
-    ChatCompletionFunctionMessageParam,
-    ChatCompletionMessageParam,
-    ChatCompletionMessageToolCallParam,
-    ChatCompletionSystemMessageParam,
-    ChatCompletionToolMessageParam,
-    ChatCompletionUserMessageParam,
-)
+from litellm.llms.custom_httpx.http_handler import HTTPHandler, get_async_httpx_client
 from litellm.types.llms.anthropic import *
 from litellm.types.llms.bedrock import MessageBlock as BedrockMessageBlock
+from litellm.types.llms.custom_http import httpxSpecialProvider
 from litellm.types.llms.ollama import OllamaVisionModelObject
 from litellm.types.llms.openai import (
     AllMessageValues,
@@ -32,7 +24,6 @@ from litellm.types.llms.openai import (
     ChatCompletionAssistantToolCall,
     ChatCompletionFunctionMessage,
     ChatCompletionImageObject,
-    ChatCompletionImageUrlObject,
     ChatCompletionTextObject,
     ChatCompletionToolCallFunctionChunk,
     ChatCompletionToolMessage,
@@ -45,7 +36,7 @@ from litellm.types.llms.vertex_ai import PartType as VertexPartType
 from litellm.types.utils import GenericImageParsingChunk
 
 from .common_utils import convert_content_list_to_str, is_non_content_values_set
-from .image_handling import async_convert_url_to_base64, convert_url_to_base64
+from .image_handling import convert_url_to_base64
 
 
 def default_pt(messages):
@@ -175,76 +166,108 @@ def convert_to_ollama_image(openai_image_url: str):
         )
 
 
+def _handle_ollama_system_message(
+    messages: list, prompt: str, msg_i: int
+) -> Tuple[str, int]:
+    system_content_str = ""
+    ## MERGE CONSECUTIVE SYSTEM CONTENT ##
+    while msg_i < len(messages) and messages[msg_i]["role"] == "system":
+        msg_content = convert_content_list_to_str(messages[msg_i])
+        system_content_str += msg_content
+
+        msg_i += 1
+
+    return system_content_str, msg_i
+
+
 def ollama_pt(
-    model, messages
+    model: str, messages: list
 ) -> Union[
     str, OllamaVisionModelObject
 ]:  # https://github.com/ollama/ollama/blob/af4cf55884ac54b9e637cd71dadfe9b7a5685877/docs/modelfile.md#template
-    if "instruct" in model:
-        prompt = custom_prompt(
-            role_dict={
-                "system": {"pre_message": "### System:\n", "post_message": "\n"},
-                "user": {
-                    "pre_message": "### User:\n",
-                    "post_message": "\n",
-                },
-                "assistant": {
-                    "pre_message": "### Response:\n",
-                    "post_message": "\n",
-                },
-            },
-            final_prompt_value="### Response:",
-            messages=messages,
+    user_message_types = {"user", "tool", "function"}
+    msg_i = 0
+    images = []
+    prompt = ""
+    while msg_i < len(messages):
+        init_msg_i = msg_i
+        user_content_str = ""
+        ## MERGE CONSECUTIVE USER CONTENT ##
+        while msg_i < len(messages) and messages[msg_i]["role"] in user_message_types:
+            msg_content = messages[msg_i].get("content")
+            if msg_content:
+                if isinstance(msg_content, list):
+                    for m in msg_content:
+                        if m.get("type", "") == "image_url":
+                            if isinstance(m["image_url"], str):
+                                images.append(m["image_url"])
+                            elif isinstance(m["image_url"], dict):
+                                images.append(m["image_url"]["url"])
+                        elif m.get("type", "") == "text":
+                            user_content_str += m["text"]
+                else:
+                    # Tool message content will always be a string
+                    user_content_str += msg_content
+
+            msg_i += 1
+
+        if user_content_str:
+            prompt += f"### User:\n{user_content_str}\n\n"
+
+        system_content_str, msg_i = _handle_ollama_system_message(
+            messages, prompt, msg_i
         )
-    elif "llava" in model:
-        prompt = ""
-        images = []
-        for message in messages:
-            if isinstance(message["content"], str):
-                prompt += message["content"]
-            elif isinstance(message["content"], list):
-                # see https://docs.litellm.ai/docs/providers/openai#openai-vision-models
-                for element in message["content"]:
-                    if isinstance(element, dict):
-                        if element["type"] == "text":
-                            prompt += element["text"]
-                        elif element["type"] == "image_url":
-                            base64_image = convert_to_ollama_image(
-                                element["image_url"]["url"]
-                            )
-                            images.append(base64_image)
-        return {"prompt": prompt, "images": images}
-    else:
-        prompt = ""
-        for message in messages:
-            role = message["role"]
-            content = message.get("content", "")
+        if system_content_str:
+            prompt += f"### System:\n{system_content_str}\n\n"
 
-            if "tool_calls" in message:
-                tool_calls = []
+        assistant_content_str = ""
+        ## MERGE CONSECUTIVE ASSISTANT CONTENT ##
+        while msg_i < len(messages) and messages[msg_i]["role"] == "assistant":
+            assistant_content_str += convert_content_list_to_str(messages[msg_i])
+            msg_i += 1
 
-                for call in message["tool_calls"]:
+            tool_calls = messages[msg_i].get("tool_calls")
+            ollama_tool_calls = []
+            if tool_calls:
+                for call in tool_calls:
                     call_id: str = call["id"]
                     function_name: str = call["function"]["name"]
                     arguments = json.loads(call["function"]["arguments"])
 
-                    tool_calls.append(
+                    ollama_tool_calls.append(
                         {
                             "id": call_id,
                             "type": "function",
-                            "function": {"name": function_name, "arguments": arguments},
+                            "function": {
+                                "name": function_name,
+                                "arguments": arguments,
+                            },
                         }
                     )
 
-                prompt += f"### Assistant:\nTool Calls: {json.dumps(tool_calls, indent=2)}\n\n"
+            if ollama_tool_calls:
+                assistant_content_str += (
+                    f"Tool Calls: {json.dumps(ollama_tool_calls, indent=2)}"
+                )
 
-            elif "tool_call_id" in message:
-                prompt += f"### User:\n{message['content']}\n\n"
+            msg_i += 1
 
-            elif content:
-                prompt += f"### {role.capitalize()}:\n{content}\n\n"
+        if assistant_content_str:
+            prompt += f"### Assistant:\n{assistant_content_str}\n\n"
 
-    return prompt
+        if msg_i == init_msg_i:  # prevent infinite loops
+            raise litellm.BadRequestError(
+                message=BAD_MESSAGE_ERROR_STR + f"passed in {messages[msg_i]}",
+                model=model,
+                llm_provider="ollama",
+            )
+
+    response_dict: OllamaVisionModelObject = {
+        "prompt": prompt,
+        "images": images,
+    }
+
+    return response_dict
 
 
 def mistral_instruct_pt(messages):
@@ -334,26 +357,6 @@ def phind_codellama_pt(messages):
     return prompt
 
 
-known_tokenizer_config = {
-    "mistralai/Mistral-7B-Instruct-v0.1": {
-        "tokenizer": {
-            "chat_template": "{{ bos_token }}{% for message in messages %}{% if (message['role'] == 'user') != (loop.index0 % 2 == 0) %}{{ raise_exception('Conversation roles must alternate user/assistant/user/assistant/...') }}{% endif %}{% if message['role'] == 'user' %}{{ '[INST] ' + message['content'] + ' [/INST]' }}{% elif message['role'] == 'assistant' %}{{ message['content'] + eos_token + ' ' }}{% else %}{{ raise_exception('Only user and assistant roles are supported!') }}{% endif %}{% endfor %}",
-            "bos_token": "<s>",
-            "eos_token": "</s>",
-        },
-        "status": "success",
-    },
-    "meta-llama/Meta-Llama-3-8B-Instruct": {
-        "tokenizer": {
-            "chat_template": "{% set loop_messages = messages %}{% for message in loop_messages %}{% set content = '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n'+ message['content'] | trim + '<|eot_id|>' %}{% if loop.index0 == 0 %}{% set content = bos_token + content %}{% endif %}{{ content }}{% endfor %}{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}",
-            "bos_token": "<|begin_of_text|>",
-            "eos_token": "",
-        },
-        "status": "success",
-    },
-}
-
-
 def hf_chat_template(  # noqa: PLR0915
     model: str, messages: list, chat_template: Optional[Any] = None
 ):
@@ -387,11 +390,11 @@ def hf_chat_template(  # noqa: PLR0915
             else:
                 return {"status": "failure"}
 
-        if model in known_tokenizer_config:
-            tokenizer_config = known_tokenizer_config[model]
+        if model in litellm.known_tokenizer_config:
+            tokenizer_config = litellm.known_tokenizer_config[model]
         else:
             tokenizer_config = _get_tokenizer_config(model)
-            known_tokenizer_config.update({model: tokenizer_config})
+            litellm.known_tokenizer_config.update({model: tokenizer_config})
 
         if (
             tokenizer_config["status"] == "failure"
@@ -482,6 +485,12 @@ def hf_chat_template(  # noqa: PLR0915
         raise Exception(
             f"Error rendering template - {str(e)}"
         )  # don't use verbose_logger.exception, if exception is raised
+
+
+def deepseek_r1_pt(messages):
+    return hf_chat_template(
+        model="deepseek-r1/deepseek-r1-7b-instruct", messages=messages
+    )
 
 
 # Anthropic template
@@ -703,12 +712,13 @@ def convert_generic_image_chunk_to_openai_image_obj(
     Return:
     "data:image/jpeg;base64,{base64_image}"
     """
-    return "data:{};{},{}".format(
-        image_chunk["media_type"], image_chunk["type"], image_chunk["data"]
-    )
+    media_type = image_chunk["media_type"]
+    return "data:{};{},{}".format(media_type, image_chunk["type"], image_chunk["data"])
 
 
-def convert_to_anthropic_image_obj(openai_image_url: str) -> GenericImageParsingChunk:
+def convert_to_anthropic_image_obj(
+    openai_image_url: str, format: Optional[str]
+) -> GenericImageParsingChunk:
     """
     Input:
     "image_url": "data:image/jpeg;base64,{base64_image}",
@@ -725,7 +735,11 @@ def convert_to_anthropic_image_obj(openai_image_url: str) -> GenericImageParsing
             openai_image_url = convert_url_to_base64(url=openai_image_url)
         # Extract the media type and base64 data
         media_type, base64_data = openai_image_url.split("data:")[1].split(";base64,")
-        media_type = media_type.replace("\\/", "/")
+
+        if format:
+            media_type = format
+        else:
+            media_type = media_type.replace("\\/", "/")
 
         return GenericImageParsingChunk(
             type="base64",
@@ -843,11 +857,12 @@ def anthropic_messages_pt_xml(messages: list):
             if isinstance(messages[msg_i]["content"], list):
                 for m in messages[msg_i]["content"]:
                     if m.get("type", "") == "image_url":
+                        format = m["image_url"].get("format")
                         user_content.append(
                             {
                                 "type": "image",
                                 "source": convert_to_anthropic_image_obj(
-                                    m["image_url"]["url"]
+                                    m["image_url"]["url"], format=format
                                 ),
                             }
                         )
@@ -1179,10 +1194,13 @@ def convert_to_anthropic_tool_result(
                 )
             elif content["type"] == "image_url":
                 if isinstance(content["image_url"], str):
-                    image_chunk = convert_to_anthropic_image_obj(content["image_url"])
-                else:
                     image_chunk = convert_to_anthropic_image_obj(
-                        content["image_url"]["url"]
+                        content["image_url"], format=None
+                    )
+                else:
+                    format = content["image_url"].get("format")
+                    image_chunk = convert_to_anthropic_image_obj(
+                        content["image_url"]["url"], format=format
                     )
                 anthropic_content_list.append(
                     AnthropicMessagesImageParam(
@@ -1305,6 +1323,7 @@ def add_cache_control_to_content(
         AnthropicMessagesImageParam,
         AnthropicMessagesTextParam,
         AnthropicMessagesDocumentParam,
+        ChatCompletionThinkingBlock,
     ],
     orignal_content_element: Union[dict, AllMessageValues],
 ):
@@ -1340,6 +1359,7 @@ def _anthropic_content_element_factory(
                 data=image_chunk["data"],
             ),
         )
+
     return _anthropic_content_element
 
 
@@ -1391,13 +1411,16 @@ def anthropic_messages_pt(  # noqa: PLR0915
                     for m in user_message_types_block["content"]:
                         if m.get("type", "") == "image_url":
                             m = cast(ChatCompletionImageObject, m)
+                            format: Optional[str] = None
                             if isinstance(m["image_url"], str):
                                 image_chunk = convert_to_anthropic_image_obj(
-                                    openai_image_url=m["image_url"]
+                                    openai_image_url=m["image_url"], format=None
                                 )
                             else:
+                                format = m["image_url"].get("format")
                                 image_chunk = convert_to_anthropic_image_obj(
-                                    openai_image_url=m["image_url"]["url"]
+                                    openai_image_url=m["image_url"]["url"],
+                                    format=format,
                                 )
 
                             _anthropic_content_element = (
@@ -1430,6 +1453,8 @@ def anthropic_messages_pt(  # noqa: PLR0915
                             )
 
                             user_content.append(_content_element)
+                        elif m.get("type", "") == "document":
+                            user_content.append(cast(AnthropicMessagesDocumentParam, m))
                 elif isinstance(user_message_types_block["content"], str):
                     _anthropic_content_text_element: AnthropicMessagesTextParam = {
                         "type": "text",
@@ -1465,16 +1490,33 @@ def anthropic_messages_pt(  # noqa: PLR0915
         ## MERGE CONSECUTIVE ASSISTANT CONTENT ##
         while msg_i < len(messages) and messages[msg_i]["role"] == "assistant":
             assistant_content_block: ChatCompletionAssistantMessage = messages[msg_i]  # type: ignore
+
+            thinking_blocks = assistant_content_block.get("thinking_blocks", None)
+            if (
+                thinking_blocks is not None
+            ):  # IMPORTANT: ADD THIS FIRST, ELSE ANTHROPIC WILL RAISE AN ERROR
+                assistant_content.extend(thinking_blocks)
             if "content" in assistant_content_block and isinstance(
                 assistant_content_block["content"], list
             ):
                 for m in assistant_content_block["content"]:
-                    # handle text
+                    # handle thinking blocks
+                    thinking_block = cast(str, m.get("thinking", ""))
+                    text_block = cast(str, m.get("text", ""))
                     if (
-                        m.get("type", "") == "text" and len(m.get("text", "")) > 0
+                        m.get("type", "") == "thinking" and len(thinking_block) > 0
+                    ):  # don't pass empty text blocks. anthropic api raises errors.
+                        anthropic_message: Union[
+                            ChatCompletionThinkingBlock,
+                            AnthropicMessagesTextParam,
+                        ] = cast(ChatCompletionThinkingBlock, m)
+                        assistant_content.append(anthropic_message)
+                    # handle text
+                    elif (
+                        m.get("type", "") == "text" and len(text_block) > 0
                     ):  # don't pass empty text blocks. anthropic api raises errors.
                         anthropic_message = AnthropicMessagesTextParam(
-                            type="text", text=m.get("text")
+                            type="text", text=text_block
                         )
                         _cached_message = add_cache_control_to_content(
                             anthropic_content_element=anthropic_message,
@@ -1527,6 +1569,7 @@ def anthropic_messages_pt(  # noqa: PLR0915
             msg_i += 1
 
         if assistant_content:
+
             new_messages.append({"role": "assistant", "content": assistant_content})
 
         if msg_i == init_msg_i:  # prevent infinite loops
@@ -1534,17 +1577,6 @@ def anthropic_messages_pt(  # noqa: PLR0915
                 message=BAD_MESSAGE_ERROR_STR + f"passed in {messages[msg_i]}",
                 model=model,
                 llm_provider=llm_provider,
-            )
-    if not new_messages or new_messages[0]["role"] != "user":
-        if litellm.modify_params:
-            new_messages.insert(
-                0, {"role": "user", "content": [{"type": "text", "text": "."}]}
-            )
-        else:
-            raise Exception(
-                "Invalid first message={}. Should always start with 'role'='user' for Anthropic. System prompt is sent separately for Anthropic. set 'litellm.modify_params = True' or 'litellm_settings:modify_params = True' on proxy, to insert a placeholder user message - '.' as the first message, ".format(
-                    new_messages
-                )
             )
 
     if new_messages[-1]["role"] == "assistant":
@@ -2099,7 +2131,7 @@ def gemini_text_image_pt(messages: list):
     }
     """
     try:
-        import google.generativeai as genai  # type: ignore
+        pass  # type: ignore
     except Exception:
         raise Exception(
             "Importing google.generativeai failed, please run 'pip install -q google-generativeai"
@@ -2160,15 +2192,21 @@ def stringify_json_tool_call_content(messages: List) -> List:
 
 ###### AMAZON BEDROCK #######
 
+import base64
+import mimetypes
+from email.message import Message
+
+import httpx
+
+from litellm.types.llms.bedrock import (
+    BedrockConverseReasoningContentBlock,
+    BedrockConverseReasoningTextBlock,
+)
 from litellm.types.llms.bedrock import ContentBlock as BedrockContentBlock
 from litellm.types.llms.bedrock import DocumentBlock as BedrockDocumentBlock
 from litellm.types.llms.bedrock import ImageBlock as BedrockImageBlock
 from litellm.types.llms.bedrock import SourceBlock as BedrockSourceBlock
 from litellm.types.llms.bedrock import ToolBlock as BedrockToolBlock
-from litellm.types.llms.bedrock import (
-    ToolChoiceValuesBlock as BedrockToolChoiceValuesBlock,
-)
-from litellm.types.llms.bedrock import ToolConfigBlock as BedrockToolConfigBlock
 from litellm.types.llms.bedrock import (
     ToolInputSchemaBlock as BedrockToolInputSchemaBlock,
 )
@@ -2180,48 +2218,65 @@ from litellm.types.llms.bedrock import ToolSpecBlock as BedrockToolSpecBlock
 from litellm.types.llms.bedrock import ToolUseBlock as BedrockToolUseBlock
 
 
-def get_image_details(image_url) -> Tuple[str, str]:
-    try:
-        import base64
+def _parse_content_type(content_type: str) -> str:
+    m = Message()
+    m["content-type"] = content_type
+    return m.get_content_type()
 
-        client = HTTPHandler(concurrent_limit=1)
-        # Send a GET request to the image URL
-        response = client.get(image_url)
-        response.raise_for_status()  # Raise an exception for HTTP errors
 
+class BedrockImageProcessor:
+    """Handles both sync and async image processing for Bedrock conversations."""
+
+    @staticmethod
+    def _post_call_image_processing(response: httpx.Response) -> Tuple[str, str]:
         # Check the response's content type to ensure it is an image
         content_type = response.headers.get("content-type")
-        if not content_type or "image" not in content_type:
+        if not content_type:
             raise ValueError(
-                f"URL does not point to a valid image (content-type: {content_type})"
+                f"URL does not contain content-type (content-type: {content_type})"
             )
+        content_type = _parse_content_type(content_type)
 
         # Convert the image content to base64 bytes
         base64_bytes = base64.b64encode(response.content).decode("utf-8")
 
-        # Get mime-type
-        mime_type = content_type.split("/")[
-            1
-        ]  # Extract mime-type from content-type header
+        return base64_bytes, content_type
 
-        return base64_bytes, mime_type
+    @staticmethod
+    async def get_image_details_async(image_url) -> Tuple[str, str]:
+        try:
 
-    except Exception as e:
-        raise e
+            client = get_async_httpx_client(
+                llm_provider=httpxSpecialProvider.PromptFactory,
+                params={"concurrent_limit": 1},
+            )
+            # Send a GET request to the image URL
+            response = await client.get(image_url, follow_redirects=True)
+            response.raise_for_status()  # Raise an exception for HTTP errors
 
+            return BedrockImageProcessor._post_call_image_processing(response)
 
-def _process_bedrock_converse_image_block(
-    image_url: str,
-) -> BedrockContentBlock:
-    if "base64" in image_url:
-        # Case 1: Images with base64 encoding
-        import base64
-        import re
+        except Exception as e:
+            raise e
 
-        # base 64 is passed as data:image/jpeg;base64,<base-64-encoded-image>
+    @staticmethod
+    def get_image_details(image_url) -> Tuple[str, str]:
+        try:
+            client = HTTPHandler(concurrent_limit=1)
+            # Send a GET request to the image URL
+            response = client.get(image_url, follow_redirects=True)
+            response.raise_for_status()  # Raise an exception for HTTP errors
+
+            return BedrockImageProcessor._post_call_image_processing(response)
+
+        except Exception as e:
+            raise e
+
+    @staticmethod
+    def _parse_base64_image(image_url: str) -> Tuple[str, str, str]:
+        """Parse base64 encoded image data."""
         image_metadata, img_without_base_64 = image_url.split(",")
 
-        # read mime_type from img_without_base_64=data:image/jpeg;base64
         # Extract MIME type using regular expression
         mime_type_match = re.match(r"data:(.*?);base64", image_metadata)
         if mime_type_match:
@@ -2230,50 +2285,115 @@ def _process_bedrock_converse_image_block(
         else:
             mime_type = "image/jpeg"
             image_format = "jpeg"
-        _blob = BedrockSourceBlock(bytes=img_without_base_64)
+
+        return img_without_base_64, mime_type, image_format
+
+    @staticmethod
+    def _validate_format(mime_type: str, image_format: str) -> str:
+        """Validate image format and mime type for both images and documents."""
+
         supported_image_formats = (
             litellm.AmazonConverseConfig().get_supported_image_types()
         )
-        supported_document_types = (
+        supported_doc_formats = (
             litellm.AmazonConverseConfig().get_supported_document_types()
         )
-        if image_format in supported_image_formats:
-            return BedrockContentBlock(image=BedrockImageBlock(source=_blob, format=image_format))  # type: ignore
-        elif image_format in supported_document_types:
-            return BedrockContentBlock(document=BedrockDocumentBlock(source=_blob, format=image_format, name="DocumentPDFmessages_{}".format(str(uuid.uuid4()))))  # type: ignore
-        else:
-            # Handle the case when the image format is not supported
-            raise ValueError(
-                "Unsupported image format: {}. Supported formats: {}".format(
-                    image_format, supported_image_formats
+
+        document_types = ["application", "text"]
+        is_document = any(mime_type.startswith(doc_type) for doc_type in document_types)
+
+        if is_document:
+            potential_extensions = mimetypes.guess_all_extensions(mime_type)
+            valid_extensions = [
+                ext[1:]
+                for ext in potential_extensions
+                if ext[1:] in supported_doc_formats
+            ]
+
+            if not valid_extensions:
+                raise ValueError(
+                    f"No supported extensions for MIME type: {mime_type}. Supported formats: {supported_doc_formats}"
                 )
-            )
-    elif "https:/" in image_url:
-        # Case 2: Images with direct links
-        image_bytes, image_format = get_image_details(image_url)
+
+            # Use first valid extension instead of provided image_format
+            return valid_extensions[0]
+        else:
+            if image_format not in supported_image_formats:
+                raise ValueError(
+                    f"Unsupported image format: {image_format}. Supported formats: {supported_image_formats}"
+                )
+            return image_format
+
+    @staticmethod
+    def _create_bedrock_block(
+        image_bytes: str, mime_type: str, image_format: str
+    ) -> BedrockContentBlock:
+        """Create appropriate Bedrock content block based on mime type."""
         _blob = BedrockSourceBlock(bytes=image_bytes)
-        supported_image_formats = (
-            litellm.AmazonConverseConfig().get_supported_image_types()
-        )
-        supported_document_types = (
-            litellm.AmazonConverseConfig().get_supported_document_types()
-        )
-        if image_format in supported_image_formats:
-            return BedrockContentBlock(image=BedrockImageBlock(source=_blob, format=image_format))  # type: ignore
-        elif image_format in supported_document_types:
-            return BedrockContentBlock(document=BedrockDocumentBlock(source=_blob, format=image_format, name="DocumentPDFmessages_{}".format(str(uuid.uuid4()))))  # type: ignore
-        else:
-            # Handle the case when the image format is not supported
-            raise ValueError(
-                "Unsupported image format: {}. Supported formats: {}".format(
-                    image_format, supported_image_formats
+
+        document_types = ["application", "text"]
+        is_document = any(mime_type.startswith(doc_type) for doc_type in document_types)
+
+        if is_document:
+            return BedrockContentBlock(
+                document=BedrockDocumentBlock(
+                    source=_blob,
+                    format=image_format,
+                    name=f"DocumentPDFmessages_{str(uuid.uuid4())}",
                 )
             )
-    else:
-        raise ValueError(
-            "Unsupported image type. Expected either image url or base64 encoded string - \
-                e.g. 'data:image/jpeg;base64,<base64-encoded-string>'"
-        )
+        else:
+            return BedrockContentBlock(
+                image=BedrockImageBlock(source=_blob, format=image_format)
+            )
+
+    @classmethod
+    def process_image_sync(
+        cls, image_url: str, format: Optional[str] = None
+    ) -> BedrockContentBlock:
+        """Synchronous image processing."""
+
+        if "base64" in image_url:
+            img_bytes, mime_type, image_format = cls._parse_base64_image(image_url)
+        elif "http://" in image_url or "https://" in image_url:
+            img_bytes, mime_type = BedrockImageProcessor.get_image_details(image_url)
+            image_format = mime_type.split("/")[1]
+        else:
+            raise ValueError(
+                "Unsupported image type. Expected either image url or base64 encoded string"
+            )
+
+        if format:
+            mime_type = format
+            image_format = mime_type.split("/")[1]
+
+        image_format = cls._validate_format(mime_type, image_format)
+        return cls._create_bedrock_block(img_bytes, mime_type, image_format)
+
+    @classmethod
+    async def process_image_async(
+        cls, image_url: str, format: Optional[str]
+    ) -> BedrockContentBlock:
+        """Asynchronous image processing."""
+
+        if "base64" in image_url:
+            img_bytes, mime_type, image_format = cls._parse_base64_image(image_url)
+        elif "http://" in image_url or "https://" in image_url:
+            img_bytes, mime_type = await BedrockImageProcessor.get_image_details_async(
+                image_url
+            )
+            image_format = mime_type.split("/")[1]
+        else:
+            raise ValueError(
+                "Unsupported image type. Expected either image url or base64 encoded string"
+            )
+
+        if format:  # override with user-defined params
+            mime_type = format
+            image_format = mime_type.split("/")[1]
+
+        image_format = cls._validate_format(mime_type, image_format)
+        return cls._create_bedrock_block(img_bytes, mime_type, image_format)
 
 
 def _convert_to_bedrock_tool_call_invoke(
@@ -2459,7 +2579,7 @@ def get_user_message_block_or_continue_message(
     if content_block is None or (
         user_continue_message is None and litellm.modify_params is False
     ):
-        return message
+        return skip_empty_text_blocks(message=message)
 
     # Handle string case
     if isinstance(content_block, str):
@@ -2525,9 +2645,40 @@ def return_assistant_continue_message(
         return DEFAULT_ASSISTANT_CONTINUE_MESSAGE
 
 
+def _skip_empty_dict_blocks(blocks: List[dict]) -> List[dict]:
+    """
+    Filter out empty text blocks from a list of dictionaries.
+
+    Args:
+        blocks: List of dictionaries representing message content blocks
+
+    Returns:
+        Filtered list of non-empty text blocks
+    """
+    return [
+        item
+        for item in blocks
+        if not (item.get("type") == "text" and not item.get("text", "").strip())
+    ]
+
+
+@overload
 def skip_empty_text_blocks(
     message: ChatCompletionAssistantMessage,
 ) -> ChatCompletionAssistantMessage:
+    pass
+
+
+@overload
+def skip_empty_text_blocks(
+    message: ChatCompletionUserMessage,
+) -> ChatCompletionUserMessage:
+    pass
+
+
+def skip_empty_text_blocks(
+    message: Union[ChatCompletionAssistantMessage, ChatCompletionUserMessage],
+) -> Union[ChatCompletionAssistantMessage, ChatCompletionUserMessage]:
     """
     Skips empty text blocks in message content text blocks.
 
@@ -2540,19 +2691,36 @@ def skip_empty_text_blocks(
         isinstance(content_block, str)
         and not content_block.strip()
         and is_non_content_values_set(message)
+        and message["role"] == "assistant"
     ):
         modified_message = message.copy()
-        modified_message["content"] = None
+        modified_message["content"] = None  # user message content cannot be None
         return modified_message
     elif isinstance(content_block, list):
-        modified_content_block = [
-            item
-            for item in content_block
-            if not (item["type"] == "text" and not item["text"].strip())
-        ]
-        modified_message = message.copy()
-        modified_message["content"] = modified_content_block
-        return modified_message
+        modified_content_block = _skip_empty_dict_blocks(
+            cast(List[dict], content_block)
+        )
+
+        # If no content remains and it's an assistant message, set content to None
+        if not modified_content_block and message["role"] == "assistant":
+            modified_message = message.copy()
+            modified_message["content"] = None
+            return modified_message
+
+        modified_message_alt = message.copy()
+
+        # Type-specific casting based on message role
+        if message["role"] == "assistant":
+            modified_message_alt["content"] = cast(  # type: ignore
+                Optional[List[OpenAIMessageContentListBlock]],
+                modified_content_block or None,
+            )
+        elif message["role"] == "user" and modified_content_block is not None:
+            modified_message_alt["content"] = cast(  # type: ignore
+                Optional[List[ChatCompletionTextObject]], modified_content_block
+            )
+
+        return modified_message_alt
 
     return message
 
@@ -2647,6 +2815,250 @@ def get_assistant_message_block_or_continue_message(
     raise ValueError(f"Unsupported content type: {type(content_block)}")
 
 
+class BedrockConverseMessagesProcessor:
+    @staticmethod
+    def _initial_message_setup(
+        messages: List,
+        user_continue_message: Optional[ChatCompletionUserMessage] = None,
+    ) -> List:
+        if messages[0].get("role") is not None and messages[0]["role"] == "assistant":
+            if user_continue_message is not None:
+                messages.insert(0, user_continue_message)
+            elif litellm.modify_params:
+                messages.insert(0, DEFAULT_USER_CONTINUE_MESSAGE)
+
+        # if final message is assistant message
+        if messages[-1].get("role") is not None and messages[-1]["role"] == "assistant":
+            if user_continue_message is not None:
+                messages.append(user_continue_message)
+            elif litellm.modify_params:
+                messages.append(DEFAULT_USER_CONTINUE_MESSAGE)
+        return messages
+
+    @staticmethod
+    async def _bedrock_converse_messages_pt_async(  # noqa: PLR0915
+        messages: List,
+        model: str,
+        llm_provider: str,
+        user_continue_message: Optional[ChatCompletionUserMessage] = None,
+        assistant_continue_message: Optional[
+            Union[str, ChatCompletionAssistantMessage]
+        ] = None,
+    ) -> List[BedrockMessageBlock]:
+        contents: List[BedrockMessageBlock] = []
+        msg_i = 0
+
+        ## BASE CASE ##
+        if len(messages) == 0:
+            raise litellm.BadRequestError(
+                message=BAD_MESSAGE_ERROR_STR
+                + "bedrock requires at least one non-system message",
+                model=model,
+                llm_provider=llm_provider,
+            )
+
+        # if initial message is assistant message
+        messages = BedrockConverseMessagesProcessor._initial_message_setup(
+            messages, user_continue_message
+        )
+
+        while msg_i < len(messages):
+            user_content: List[BedrockContentBlock] = []
+            init_msg_i = msg_i
+            ## MERGE CONSECUTIVE USER CONTENT ##
+            while msg_i < len(messages) and messages[msg_i]["role"] == "user":
+                message_block = get_user_message_block_or_continue_message(
+                    message=messages[msg_i],
+                    user_continue_message=user_continue_message,
+                )
+                if isinstance(message_block["content"], list):
+                    _parts: List[BedrockContentBlock] = []
+                    for element in message_block["content"]:
+                        if isinstance(element, dict):
+                            if element["type"] == "text":
+                                _part = BedrockContentBlock(text=element["text"])
+                                _parts.append(_part)
+                            elif element["type"] == "image_url":
+                                format: Optional[str] = None
+                                if isinstance(element["image_url"], dict):
+                                    image_url = element["image_url"]["url"]
+                                    format = element["image_url"].get("format")
+                                else:
+                                    image_url = element["image_url"]
+                                _part = await BedrockImageProcessor.process_image_async(  # type: ignore
+                                    image_url=image_url, format=format
+                                )
+                                _parts.append(_part)  # type: ignore
+                            _cache_point_block = (
+                                litellm.AmazonConverseConfig()._get_cache_point_block(
+                                    message_block=cast(
+                                        OpenAIMessageContentListBlock, element
+                                    ),
+                                    block_type="content_block",
+                                )
+                            )
+                            if _cache_point_block is not None:
+                                _parts.append(_cache_point_block)
+                    user_content.extend(_parts)
+                elif message_block["content"] and isinstance(
+                    message_block["content"], str
+                ):
+                    _part = BedrockContentBlock(text=messages[msg_i]["content"])
+                    _cache_point_block = (
+                        litellm.AmazonConverseConfig()._get_cache_point_block(
+                            message_block, block_type="content_block"
+                        )
+                    )
+                    user_content.append(_part)
+                    if _cache_point_block is not None:
+                        user_content.append(_cache_point_block)
+
+                msg_i += 1
+            if user_content:
+                if len(contents) > 0 and contents[-1]["role"] == "user":
+                    if (
+                        assistant_continue_message is not None
+                        or litellm.modify_params is True
+                    ):
+                        # if last message was a 'user' message, then add a dummy assistant message (bedrock requires alternating roles)
+                        contents = _insert_assistant_continue_message(
+                            messages=contents,
+                            assistant_continue_message=assistant_continue_message,
+                        )
+                        contents.append(
+                            BedrockMessageBlock(role="user", content=user_content)
+                        )
+                    else:
+                        verbose_logger.warning(
+                            "Potential consecutive user/tool blocks. Trying to merge. If error occurs, please set a 'assistant_continue_message' or set 'modify_params=True' to insert a dummy assistant message for bedrock calls."
+                        )
+                        contents[-1]["content"].extend(user_content)
+                else:
+                    contents.append(
+                        BedrockMessageBlock(role="user", content=user_content)
+                    )
+
+            ## MERGE CONSECUTIVE TOOL CALL MESSAGES ##
+            tool_content: List[BedrockContentBlock] = []
+            while msg_i < len(messages) and messages[msg_i]["role"] == "tool":
+                tool_call_result = _convert_to_bedrock_tool_call_result(messages[msg_i])
+
+                tool_content.append(tool_call_result)
+                msg_i += 1
+            if tool_content:
+                # if last message was a 'user' message, then add a blank assistant message (bedrock requires alternating roles)
+                if len(contents) > 0 and contents[-1]["role"] == "user":
+                    if (
+                        assistant_continue_message is not None
+                        or litellm.modify_params is True
+                    ):
+                        # if last message was a 'user' message, then add a dummy assistant message (bedrock requires alternating roles)
+                        contents = _insert_assistant_continue_message(
+                            messages=contents,
+                            assistant_continue_message=assistant_continue_message,
+                        )
+                        contents.append(
+                            BedrockMessageBlock(role="user", content=tool_content)
+                        )
+                    else:
+                        verbose_logger.warning(
+                            "Potential consecutive user/tool blocks. Trying to merge. If error occurs, please set a 'assistant_continue_message' or set 'modify_params=True' to insert a dummy assistant message for bedrock calls."
+                        )
+                        contents[-1]["content"].extend(tool_content)
+                else:
+                    contents.append(
+                        BedrockMessageBlock(role="user", content=tool_content)
+                    )
+            assistant_content: List[BedrockContentBlock] = []
+            ## MERGE CONSECUTIVE ASSISTANT CONTENT ##
+            while msg_i < len(messages) and messages[msg_i]["role"] == "assistant":
+                assistant_message_block = (
+                    get_assistant_message_block_or_continue_message(
+                        message=messages[msg_i],
+                        assistant_continue_message=assistant_continue_message,
+                    )
+                )
+                _assistant_content = assistant_message_block.get("content", None)
+
+                if _assistant_content is not None and isinstance(
+                    _assistant_content, list
+                ):
+                    assistants_parts: List[BedrockContentBlock] = []
+                    for element in _assistant_content:
+                        if isinstance(element, dict):
+                            if element["type"] == "thinking":
+                                thinking_block = BedrockConverseMessagesProcessor.translate_thinking_blocks_to_reasoning_content_blocks(
+                                    thinking_blocks=[
+                                        cast(ChatCompletionThinkingBlock, element)
+                                    ]
+                                )
+                                assistants_parts.extend(thinking_block)
+                            elif element["type"] == "text":
+                                assistants_part = BedrockContentBlock(
+                                    text=element["text"]
+                                )
+                                assistants_parts.append(assistants_part)
+                            elif element["type"] == "image_url":
+                                if isinstance(element["image_url"], dict):
+                                    image_url = element["image_url"]["url"]
+                                else:
+                                    image_url = element["image_url"]
+                                assistants_part = await BedrockImageProcessor.process_image_async(  # type: ignore
+                                    image_url=image_url
+                                )
+                                assistants_parts.append(assistants_part)
+                    assistant_content.extend(assistants_parts)
+                elif _assistant_content is not None and isinstance(
+                    _assistant_content, str
+                ):
+                    assistant_content.append(
+                        BedrockContentBlock(text=_assistant_content)
+                    )
+                _tool_calls = assistant_message_block.get("tool_calls", [])
+                if _tool_calls:
+                    assistant_content.extend(
+                        _convert_to_bedrock_tool_call_invoke(_tool_calls)
+                    )
+
+                msg_i += 1
+
+            if assistant_content:
+                contents.append(
+                    BedrockMessageBlock(role="assistant", content=assistant_content)
+                )
+
+            if msg_i == init_msg_i:  # prevent infinite loops
+                raise litellm.BadRequestError(
+                    message=BAD_MESSAGE_ERROR_STR + f"passed in {messages[msg_i]}",
+                    model=model,
+                    llm_provider=llm_provider,
+                )
+
+        return contents
+
+    @staticmethod
+    def translate_thinking_blocks_to_reasoning_content_blocks(
+        thinking_blocks: List[ChatCompletionThinkingBlock],
+    ) -> List[BedrockContentBlock]:
+        reasoning_content_blocks: List[BedrockContentBlock] = []
+        for thinking_block in thinking_blocks:
+            reasoning_text = thinking_block.get("thinking")
+            reasoning_signature = thinking_block.get("signature")
+            text_block = BedrockConverseReasoningTextBlock(
+                text=reasoning_text or "",
+            )
+            if reasoning_signature is not None:
+                text_block["signature"] = reasoning_signature
+            reasoning_content_block = BedrockConverseReasoningContentBlock(
+                reasoningText=text_block,
+            )
+            bedrock_content_block = BedrockContentBlock(
+                reasoningContent=reasoning_content_block
+            )
+            reasoning_content_blocks.append(bedrock_content_block)
+        return reasoning_content_blocks
+
+
 def _bedrock_converse_messages_pt(  # noqa: PLR0915
     messages: List,
     model: str,
@@ -2707,12 +3119,15 @@ def _bedrock_converse_messages_pt(  # noqa: PLR0915
                             _part = BedrockContentBlock(text=element["text"])
                             _parts.append(_part)
                         elif element["type"] == "image_url":
+                            format: Optional[str] = None
                             if isinstance(element["image_url"], dict):
                                 image_url = element["image_url"]["url"]
+                                format = element["image_url"].get("format")
                             else:
                                 image_url = element["image_url"]
-                            _part = _process_bedrock_converse_image_block(  # type: ignore
-                                image_url=image_url
+                            _part = BedrockImageProcessor.process_image_sync(  # type: ignore
+                                image_url=image_url,
+                                format=format,
                             )
                             _parts.append(_part)  # type: ignore
                         _cache_point_block = (
@@ -2792,17 +3207,36 @@ def _bedrock_converse_messages_pt(  # noqa: PLR0915
         assistant_content: List[BedrockContentBlock] = []
         ## MERGE CONSECUTIVE ASSISTANT CONTENT ##
         while msg_i < len(messages) and messages[msg_i]["role"] == "assistant":
+
             assistant_message_block = get_assistant_message_block_or_continue_message(
                 message=messages[msg_i],
                 assistant_continue_message=assistant_continue_message,
             )
             _assistant_content = assistant_message_block.get("content", None)
+            thinking_blocks = cast(
+                Optional[List[ChatCompletionThinkingBlock]],
+                assistant_message_block.get("thinking_blocks"),
+            )
+
+            if thinking_blocks is not None:
+                assistant_content.extend(
+                    BedrockConverseMessagesProcessor.translate_thinking_blocks_to_reasoning_content_blocks(
+                        thinking_blocks
+                    )
+                )
 
             if _assistant_content is not None and isinstance(_assistant_content, list):
                 assistants_parts: List[BedrockContentBlock] = []
                 for element in _assistant_content:
                     if isinstance(element, dict):
-                        if element["type"] == "text":
+                        if element["type"] == "thinking":
+                            thinking_block = BedrockConverseMessagesProcessor.translate_thinking_blocks_to_reasoning_content_blocks(
+                                thinking_blocks=[
+                                    cast(ChatCompletionThinkingBlock, element)
+                                ]
+                            )
+                            assistants_parts.extend(thinking_block)
+                        elif element["type"] == "text":
                             assistants_part = BedrockContentBlock(text=element["text"])
                             assistants_parts.append(assistants_part)
                         elif element["type"] == "image_url":
@@ -2810,7 +3244,7 @@ def _bedrock_converse_messages_pt(  # noqa: PLR0915
                                 image_url = element["image_url"]["url"]
                             else:
                                 image_url = element["image_url"]
-                            assistants_part = _process_bedrock_converse_image_block(  # type: ignore
+                            assistants_part = BedrockImageProcessor.process_image_sync(  # type: ignore
                                 image_url=image_url
                             )
                             assistants_parts.append(assistants_part)
@@ -3086,7 +3520,9 @@ def prompt_factory(
         else:
             return gemini_text_image_pt(messages=messages)
     elif custom_llm_provider == "mistral":
-        return litellm.MistralConfig()._transform_messages(messages=messages)
+        return litellm.MistralConfig()._transform_messages(
+            messages=messages, model=model
+        )
     elif custom_llm_provider == "bedrock":
         if "amazon.titan-text" in model:
             return amazon_titan_pt(messages=messages)

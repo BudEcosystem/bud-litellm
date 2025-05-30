@@ -1,13 +1,13 @@
 import json
 from copy import deepcopy
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Callable, Optional, Union
 
 import httpx
 
+from litellm.llms.bedrock.base_aws_llm import BaseAWSLLM
+from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
 from litellm.utils import ModelResponse, get_secret
 
-from litellm.llms.bedrock.base_aws_llm import BaseAWSLLM
-from litellm.litellm_core_utils.prompt_templates.factory import custom_prompt, prompt_factory
 from ..common_utils import AWSEventStreamDecoder
 from .transformation import SagemakerChatConfig
 
@@ -79,10 +79,8 @@ class SagemakerChatHandler(BaseAWSLLM):
         extra_headers: Optional[dict] = None,
     ):
         try:
-            import boto3
             from botocore.auth import SigV4Auth
             from botocore.awsrequest import AWSRequest
-            from botocore.credentials import Credentials
         except ImportError:
             raise ImportError("Missing boto3 to call bedrock. Run 'pip install boto3'.")
 
@@ -128,6 +126,7 @@ class SagemakerChatHandler(BaseAWSLLM):
         logger_fn=None,
         acompletion: bool = False,
         headers: dict = {},
+        client: Optional[Union[HTTPHandler, AsyncHTTPHandler]] = None,
     ):
 
         # pop streaming if it's in the optional params as 'stream' raises an error with sagemaker
@@ -176,4 +175,5 @@ class SagemakerChatHandler(BaseAWSLLM):
             custom_endpoint=True,
             custom_llm_provider="sagemaker_chat",
             streaming_decoder=custom_stream_decoder,  # type: ignore
+            client=client,
         )

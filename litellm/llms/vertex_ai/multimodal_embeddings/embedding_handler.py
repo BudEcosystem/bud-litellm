@@ -1,5 +1,5 @@
 import json
-from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
+from typing import List, Literal, Optional, Union
 
 import httpx
 
@@ -18,7 +18,6 @@ from litellm.types.llms.vertex_ai import (
     Instance,
     InstanceImage,
     InstanceVideo,
-    MultimodalPrediction,
     MultimodalPredictions,
     VertexMultimodalEmbeddingRequest,
 )
@@ -227,7 +226,15 @@ class VertexMultimodalEmbedding(VertexLLM):
             else:
                 return Instance(image=InstanceImage(gcsUri=input_element))
         elif is_base64_encoded(s=input_element):
-            return Instance(image=InstanceImage(bytesBase64Encoded=input_element))
+            return Instance(
+                image=InstanceImage(
+                    bytesBase64Encoded=(
+                        input_element.split(",")[1]
+                        if "," in input_element
+                        else input_element
+                    )
+                )
+            )
         else:
             return Instance(text=input_element)
 

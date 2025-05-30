@@ -1,8 +1,21 @@
 general_settings:
   store_model_in_db: True
   custom_auth: litellm.custom_auth.user_api_key_auth
+  master_key: "os.environ/LITELLM_MASTER_KEY"
+  proxy_batch_write_at: 60
+  database_connection_pool_limit: 10
+
+  disable_spend_logs: True
+  disable_error_logs: True
+  allow_requests_on_db_unavailable: True
 router_settings:
   cache_responses: False
   redis_host: "os.environ/REDIS_HOST"
   redis_port: "os.environ/REDIS_PORT"
   redis_password: "os.environ/REDIS_PASSWORD"
+litellm_settings:
+  callbacks: litellm.custom_callbacks.proxy_handler_instance # sets litellm.callbacks = [proxy_handler_instance]
+  drop_params: true
+  request_timeout: 600
+  set_verbose: False
+  json_logs: true 

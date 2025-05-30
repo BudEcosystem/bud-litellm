@@ -14,21 +14,18 @@ from typing import Any, Coroutine, Dict, Literal, Optional, Union, cast
 import httpx
 
 import litellm
-from litellm import client, get_secret_str
+from litellm import get_secret_str
 from litellm.llms.azure.files.handler import AzureOpenAIFilesAPI
 from litellm.llms.openai.openai import FileDeleted, FileObject, OpenAIFilesAPI
-from litellm.llms.vertex_ai.files.handler import (
-    VertexAIFilesHandler,
-)
+from litellm.llms.vertex_ai.files.handler import VertexAIFilesHandler
 from litellm.types.llms.openai import (
-    Batch,
     CreateFileRequest,
     FileContentRequest,
     FileTypes,
     HttpxBinaryResponseContent,
 )
 from litellm.types.router import *
-from litellm.utils import supports_httpx_timeout
+from litellm.utils import get_litellm_params, supports_httpx_timeout
 
 ####### ENVIRONMENT VARIABLES ###################
 openai_files_instance = OpenAIFilesAPI()
@@ -549,6 +546,7 @@ def create_file(
     try:
         _is_async = kwargs.pop("acreate_file", False) is True
         optional_params = GenericLiteLLMParams(**kwargs)
+        litellm_params_dict = get_litellm_params(**kwargs)
 
         ### TIMEOUT LOGIC ###
         timeout = optional_params.timeout or kwargs.get("request_timeout", 600) or 600
@@ -633,6 +631,7 @@ def create_file(
                 timeout=timeout,
                 max_retries=optional_params.max_retries,
                 create_file_data=_create_file_request,
+                litellm_params=litellm_params_dict,
             )
         elif custom_llm_provider == "vertex_ai":
             api_base = optional_params.api_base or ""
@@ -819,7 +818,7 @@ def file_content(
             )
         else:
             raise litellm.exceptions.BadRequestError(
-                message="LiteLLM doesn't support {} for 'file_content'. Only 'openai' and 'azure' are supported.".format(
+                message="LiteLLM doesn't support {} for 'custom_llm_provider'. Supported providers are 'openai', 'azure', 'vertex_ai'.".format(
                     custom_llm_provider
                 ),
                 model="n/a",

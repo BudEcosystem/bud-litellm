@@ -2,19 +2,12 @@
 ## Handler file for OpenAI-like endpoints.
 ## Allows jina ai embedding calls - which don't allow 'encoding_format' in payload.
 
-import copy
 import json
-import os
-import time
-import types
-from enum import Enum
-from functools import partial
-from typing import Any, Callable, List, Literal, Optional, Tuple, Union
+from typing import Optional
 
 import httpx
 
 import litellm
-from litellm.litellm_core_utils.core_helpers import map_finish_reason
 from litellm.llms.custom_httpx.http_handler import (
     AsyncHTTPHandler,
     HTTPHandler,
@@ -43,16 +36,15 @@ class OpenAILikeEmbeddingHandler(OpenAILikeBase):
     ) -> EmbeddingResponse:
         response = None
         try:
-            if client is None or isinstance(client, AsyncHTTPHandler):
-                self.async_client = get_async_httpx_client(
+            if client is None or not isinstance(client, AsyncHTTPHandler):
+                async_client = get_async_httpx_client(
                     llm_provider=litellm.LlmProviders.OPENAI,
                     params={"timeout": timeout},
                 )
             else:
-                self.async_client = client
-
+                async_client = client
             try:
-                response = await self.async_client.post(
+                response = await async_client.post(
                     api_base,
                     headers=headers,
                     data=json.dumps(data),
